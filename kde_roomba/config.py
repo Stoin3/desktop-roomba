@@ -20,6 +20,8 @@ def state_dir() -> Path:
 
 @dataclass
 class Config:
+    config_version: int = 2
+
     # --- AI -------------------------------------------------------------
     # Ollama-server en (klein) model. Zet use_ai op false om alleen de
     # ingebouwde heuristiek te gebruiken.
@@ -30,8 +32,9 @@ class Config:
     ai_batch_size: int = 8
 
     # --- Veiligheid -----------------------------------------------------
-    # Bestanden jonger dan dit worden nooit weggegooid.
-    min_age_hours: float = 2.0
+    # Bestanden die in de laatste paar minuten nog gewijzigd zijn (bijv. een
+    # lopende download) worden overgeslagen. 0.05 uur = 3 minuten.
+    min_age_hours: float = 0.05
     # Mappen worden standaard nooit weggegooid.
     allow_folders: bool = False
     # Extensies die nooit weggegooid worden.
@@ -71,6 +74,12 @@ class Config:
                 for k, v in data.items():
                     if k in known:
                         setattr(cfg, k, v)
+                if int(data.get("config_version", 1)) < 2:
+                    # v1 had een te strenge leeftijdsgrens van 2 uur
+                    if data.get("min_age_hours") == 2.0:
+                        cfg.min_age_hours = 0.05
+                    cfg.config_version = 2
+                    cfg.save()
             except (OSError, ValueError) as exc:
                 print(f"[kde-roomba] Kon config niet lezen ({exc}), gebruik standaardwaarden.")
         else:

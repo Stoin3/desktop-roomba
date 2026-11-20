@@ -18,6 +18,7 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import time
 import urllib.error
@@ -199,6 +200,48 @@ JUNK_NAME_PATTERNS = [
 ]
 
 
+KEYBOARD_ROWS = ("qwertyuiop", "asdfghjkl", "zxcvbnm")
+KEYBOARD_CLASSICS = ("asdf", "fdsa", "qwer", "zxcv", "hjkl", "jkl")
+VOWELS = set("aeiouy")
+
+
+def looks_like_gibberish(stem: str) -> bool:
+    """Herkent ingetypte onzin zoals 'liuhliuhliuh', 'asdfgh' of 'kjhkjhkjh'."""
+    s = stem.lower()
+    letters = re.sub(r"[^a-z]", "", s)
+    if len(letters) < 4 or len(letters) < len(s) * 0.8:
+        return False  # te kort, of veel cijfers/spaties/leestekens (echte namen)
+
+    # toetsenbordgeklop: asdf, 5 opeenvolgende toetsen van één rij (qwert, lkjhg)
+    if any(k in letters for k in KEYBOARD_CLASSICS if len(k) >= 4) or letters in KEYBOARD_CLASSICS:
+        return True
+    for row in KEYBOARD_ROWS:
+        for i in range(len(row) - 4):
+            chunk = row[i:i + 5]
+            if chunk in letters or chunk[::-1] in letters:
+                return True
+
+    # het grootste deel van de naam is een herhaald stukje: 'liuhliuh', 'kjhkjhkjh'
+    n_len = len(letters)
+    for n in range(2, 7):
+        for i in range(0, n_len - 2 * n + 1):
+            unit, k = letters[i:i + n], 1
+            while letters[i + k * n:i + (k + 1) * n] == unit:
+                k += 1
+            if k >= 2 and (n >= 3 or k >= 3) and k * n >= 0.6 * n_len:
+                return True
+
+    vowel_ratio = sum(c in VOWELS for c in letters) / n_len
+    # heel weinig verschillende letters: 'liuhluihliuh'
+    # (echte woorden met weinig letters hebben meestal dubbele letters: Mississippi)
+    if n_len >= 8 and len(set(letters)) / n_len < 0.42 and not re.search(r"(.)\1", letters):
+        return True
+    # lange medeklinkerreeks zonder klinkers eromheen: 'sdfkjhg'
+    if re.search(r"[^aeiouy]{6,}", letters) and vowel_ratio < 0.25:
+        return True
+    return False
+
+
 def _or(a: float, b: float) -> float:
     """Combineer twee onafhankelijke 'afval-kansen'."""
     return 1.0 - (1.0 - a) * (1.0 - b)
@@ -223,6 +266,13 @@ def score_file(info: FileInfo) -> None:
         if rx.search(info.name):
             score = _or(score, s)
             hints.append(h)
+    stem = info.name[: -len(info.ext)] if info.ext and info.name.endswith(info.ext) else info.name
+    if looks_like_gibberish(stem):
+        score = _or(score, 0.6)
+        hints.append("naam lijkt willekeurig getypt")
+        if info.size < 4096:
+            score = _or(score, 0.4)
+            hints.append("vrijwel geen inhoud")
     if info.size == 0:
         score = _or(score, 0.85)
         hints.append("leeg bestand (0 bytes)")
@@ -263,6 +313,8 @@ Regels:
 - Persoonlijke documenten, foto's, projecten, notities met echte inhoud, scripts en archieven die werk lijken te bevatten zijn GEEN afval.
 - Tijdelijke bestanden, onvolledige downloads (.part/.crdownload), lege bestanden, lockbestanden, editor-back-ups,
   dubbele downloads zoals "bestand (1).pdf", oude installers en oude schermafdrukken zijn meestal WEL afval.
+- Bestanden met een willekeurig getypte naam (toetsenbordgeklop zoals "asdfgh", "liuhliuh", "kjhkjh")
+  en zonder zinvolle inhoud zijn WEL afval.
 - 'hints' komen van een eenvoudige heuristiek en zijn slechts een indicatie.
 - Geef voor ELK bestand precies één resultaat, met exact dezelfde naam.
 - 'reason' is een korte Nederlandse uitleg (max 10 woorden).
@@ -300,15 +352,44 @@ def _post_json(url: str, payload: dict, timeout: float) -> dict:
         return json.loads(resp.read().decode())
 
 
-def ollama_available(cfg: Config) -> bool:
+def ollama_status(cfg: Config) -> tuple[bool, str]:
+    """(bruikbaar, uitleg). Start Ollama zelf als het geïnstalleerd is maar niet draait."""
+    url = cfg.ollama_url.rstrip("/") + "/api/tags"
+
+    def tags():
+        with urllib.request.urlopen(url, timeout=2) as resp:
+            return json.loads(resp.read().decode())
+
     try:
-        with urllib.request.urlopen(cfg.ollama_url.rstrip("/") + "/api/tags", timeout=2) as resp:
-            data = json.loads(resp.read().decode())
-        names = {m.get("name", "") for m in data.get("models", [])}
-        want = cfg.model if ":" in cfg.model else cfg.model + ":latest"
-        return want in names or cfg.model in names
+        data = tags()
     except (OSError, ValueError, urllib.error.URLError):
-        return False
+        if not shutil.which("ollama"):
+            return False, "Ollama is niet geïnstalleerd"
+        logging.getLogger("kde-roomba").info("Ollama draait niet; ik start 'ollama serve'.")
+        try:
+            subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             stdin=subprocess.DEVNULL, start_new_session=True)
+        except OSError as exc:
+            return False, f"Ollama starten mislukt: {exc}"
+        data = None
+        for _ in range(30):
+            time.sleep(0.5)
+            try:
+                data = tags()
+                break
+            except (OSError, ValueError, urllib.error.URLError):
+                continue
+        if data is None:
+            return False, "Ollama reageert niet"
+    names = {m.get("name", "") for m in data.get("models", [])}
+    want = cfg.model if ":" in cfg.model else cfg.model + ":latest"
+    if want in names or cfg.model in names:
+        return True, "ok"
+    return False, f"model {cfg.model} ontbreekt (ollama pull {cfg.model})"
+
+
+def ollama_available(cfg: Config) -> bool:
+    return ollama_status(cfg)[0]
 
 
 def ai_classify_batch(cfg: Config, batch: list[FileInfo]) -> dict[str, tuple[bool, str]]:
@@ -343,7 +424,12 @@ def classify(cfg: Config, items: list[FileInfo], progress=None) -> tuple[list[Ve
     verdicts: list[Verdict] = []
     method = "heuristiek"
 
-    use_ai = cfg.use_ai and candidates and ollama_available(cfg)
+    use_ai = False
+    if cfg.use_ai and candidates:
+        use_ai, why = ollama_status(cfg)
+        if not use_ai:
+            method = f"heuristiek – {why}"
+            logging.getLogger("kde-roomba").warning("Geen AI: %s", why)
     if use_ai:
         method = f"AI ({cfg.model})"
         bs = max(1, int(cfg.ai_batch_size))

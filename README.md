@@ -56,16 +56,16 @@ Een logboek staat in `~/.local/state/kde-roomba/history.log`.
 
 1. **Harde veiligheidsregels** – deze gaan nooit weg (en worden niet eens aan de AI getoond):
    mappen, snelkoppelingen/`.desktop`-bestanden, verborgen bestanden, beschermde extensies
-   (`.kdbx`, `.key`, `.odt`, `.docx`, …) en bestanden die jonger zijn dan 2 uur.
+   (`.kdbx`, `.key`, `.odt`, `.docx`, …) en bestanden die in de laatste 3 minuten nog gewijzigd zijn.
    Maximaal 15 bestanden per ronde.
 2. **Heuristiek** – geeft hints zoals *onvolledige download (`.part`)*, *leeg bestand*,
-   *dubbele download `(1)`*, *oude installer*, *lockbestand*, *oude schermafdruk*.
+   *dubbele download `(1)`*, *willekeurig getypte naam (`asdfgh`, `liuhliuh`)*, *oude installer*, *lockbestand*, *oude schermafdruk*.
 3. **Lokaal AI-model** (Ollama, standaard `qwen2.5:1.5b`) krijgt per bestand naam, type,
    grootte, leeftijd, de hints en (voor tekstbestanden) de eerste 200 tekens, en beslist
    met gestructureerde JSON-uitvoer. Het is geïnstrueerd om bij twijfel *niets* weg te gooien.
    Er gaat **niets** het internet op.
 
-Draait Ollama niet, dan gebruikt de roomba alleen de heuristiek (en zegt hij dat).
+Draait Ollama niet, dan start de roomba het zelf. Lukt dat niet, dan gebruikt hij alleen de heuristiek en zegt hij in de tekstballon waarom.
 
 Ander model? Pas `model` aan in de config, bijv. `qwen2.5:0.5b` (lichter) of
 `llama3.2:3b` (slimmer), en doe `ollama pull <model>`.
@@ -78,7 +78,7 @@ Ander model? Pas `model` aan in de config, bijv. `qwen2.5:0.5b` (lichter) of
 |---|---|---|
 | `use_ai` | `true` | Ollama gebruiken |
 | `model` | `qwen2.5:1.5b` | Ollama-model |
-| `min_age_hours` | `2` | Nieuwere bestanden nooit weggooien |
+| `min_age_hours` | `0.05` | Bestanden die in de laatste 3 minuten gewijzigd zijn overslaan (lopende downloads) |
 | `max_files_per_run` | `15` | Maximum per ronde |
 | `protected_extensions` | … | Nooit weggooien |
 | `allow_folders` | `false` | Ook (lege) mappen mogen weg |

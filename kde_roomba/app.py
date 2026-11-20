@@ -52,7 +52,7 @@ def ease_in_out(x: float) -> float:
 
 class BrainWorker(QThread):
     progress = pyqtSignal(str)
-    finished_ok = pyqtSignal(list, str, int)  # [Verdict], methode, aantal_bekeken
+    finished_ok = pyqtSignal(list, str, int, str)  # [Verdict], methode, aantal_bekeken, overgeslagen
     failed = pyqtSignal(str)
 
     def __init__(self, cfg: Config, desktop: Path):
@@ -69,7 +69,15 @@ class BrainWorker(QThread):
                     self.progress.emit(f"Even nadenken…\n{done}/{total} bestanden bekeken")
 
             verdicts, method = brain.classify(self.cfg, items, prog)
-            self.finished_ok.emit(brain.choose_trash(self.cfg, verdicts), method, len(items))
+            from collections import Counter
+
+            skipped = Counter(i.protected_reason for i in items if i.protected_reason)
+            labels = {"map": "map(pen)", "snelkoppeling": "snelkoppeling(en)", "te nieuw": "net gewijzigd"}
+            skip_txt = ", ".join(f"{n} {labels.get(r, r)}" for r, n in skipped.most_common())
+            log.info("Bekeken: %d, overgeslagen: %s, methode: %s", len(items), skip_txt or "geen", method)
+            for v in verdicts:
+                log.info("  %s %s — %s [%s]", "AFVAL " if v.trash else "houden", v.info.name, v.reason, v.source)
+            self.finished_ok.emit(brain.choose_trash(self.cfg, verdicts), method, len(items), skip_txt)
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
 
@@ -418,11 +426,12 @@ class RoombaWindow(QWidget):
         self.say(f"Er ging iets mis 😵\n{msg[:80]}", 6)
         self.queue = [Wait(4), Call(self._back_to_charging)]
 
-    def on_brain_done(self, targets: list, method: str, seen: int) -> None:
+    def on_brain_done(self, targets: list, method: str, seen: int, skipped: str = "") -> None:
         self.worker = None
         if not targets:
             self.state = "happy"
-            self.say(f"Alles is al schoon! ✨\n({seen} items bekeken, {method})", 5)
+            extra = f"\nOvergeslagen: {skipped}" if skipped else ""
+            self.say(f"Alles is al schoon! ✨\n({seen} items bekeken, {method}){extra}", 7)
             self.queue = [Wait(0.3), Spin(1, 1.4), Wait(0.4), Call(self._back_to_charging)]
             return
 
@@ -823,8 +832,9 @@ class RoombaWindow(QWidget):
         elif chosen is a_ai:
             self.cfg.use_ai = a_ai.isChecked()
             self.cfg.save()
-            if self.cfg.use_ai and not brain.ollama_available(self.cfg):
-                self.say(f"Ollama/{self.cfg.model} niet gevonden.\nIk gebruik mijn eigen regels.", 4)
+            if self.cfg.use_ai:
+                ok, why = brain.ollama_status(self.cfg)
+                self.say("AI staat aan. 🧠" if ok else f"AI niet beschikbaar: {why}.\nIk gebruik mijn eigen regels.", 4)
         elif chosen is a_hist:
             f = state_dir() / "history.log"
             f.parent.mkdir(parents=True, exist_ok=True)
