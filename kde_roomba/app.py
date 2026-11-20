@@ -22,11 +22,17 @@ from pathlib import Path
 from typing import Callable
 
 from PyQt6.QtCore import QMimeDatabase, QPointF, QRect, QRectF, Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFontMetrics, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRegion
-from PyQt6.QtWidgets import QApplication, QFileIconProvider, QMenu, QWidget
+from PyQt6.QtGui import QColor, QDrag, QFontMetrics, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRegion
+from PyQt6.QtWidgets import QApplication, QFileDialog, QFileIconProvider, QMenu, QWidget
 from PyQt6.QtCore import QFileInfo, QFile, QLockFile
 
 from . import APP_ID, __version__, art, brain, kwin, wayland_layer
+
+try:
+    from . import folder_drop
+except ImportError as _exc:  # PyQt6.QtDBus ontbreekt: slepen naar mappen uit
+    folder_drop = None
+    _FOLDER_DROP_ERROR = str(_exc)
 from .config import Config, config_dir, state_dir
 from .desktop_layout import DesktopLayout
 
@@ -55,10 +61,10 @@ class BrainWorker(QThread):
     finished_ok = pyqtSignal(list, str, int, str)  # [Verdict], methode, aantal_bekeken, overgeslagen
     failed = pyqtSignal(str)
 
-    def __init__(self, cfg: Config, desktop: Path):
+    def __init__(self, cfg: Config, folder: Path):
         super().__init__()
         self.cfg = cfg
-        self.desktop = desktop
+        self.desktop = folder
 
     def run(self) -> None:
         try:
@@ -341,7 +347,17 @@ class RoombaWindow(QWidget):
         self.timer.timeout.connect(self.tick)
         self.timer.start(16)
 
-        self.say(f"Hoi! Dubbelklik op mij\nom je bureaublad op te ruimen.", 5)
+        self.robot_hidden = False      # tijdens het slepen 'zweeft' hij bij de muis
+        self.remote_folder: Path | None = None  # map waarin hij op afstand stofzuigt
+        if folder_drop is not None:
+            self.drop = folder_drop.DropReceiver()
+            self.drop.folderDropped.connect(self.on_folder_dropped)
+        else:
+            log.warning("Slepen naar mappen niet beschikbaar: %s", _FOLDER_DROP_ERROR)
+            self.drop = type("NoDrop", (), {"ok": False})()
+        self._drop_seen = False
+
+        self.say("Hoi! Dubbelklik op mij om je bureaublad\nop te ruimen, of sleep me naar een map.", 6)
 
     # ------------------------------------------------------------ helpers
     def target_screen(self):
@@ -423,14 +439,19 @@ class RoombaWindow(QWidget):
         return icon.pixmap(size, size)
 
     # ------------------------------------------------------------ flow
-    def start_cleaning(self) -> None:
+    def start_cleaning(self, folder: Path | None = None) -> None:
         if self.busy():
             return
+        is_desktop = folder is None or folder.resolve() == self.desktop.resolve()
+        self.remote_folder = None if is_desktop else folder
+        self.robot_hidden = False
         self.state = "thinking"
-        self.say("Even nadenken…\nwelke bestanden zijn afval?", 600)
+        where = f"\n📁 {folder.name}" if self.remote_folder else ""
+        self.say(f"Even nadenken…\nwelke bestanden zijn afval?{where}", 600)
         self.cleaned, self.failed = [], []
         self.robot.bin_fill = 0.0
-        self.worker = BrainWorker(self.cfg, self.desktop)
+        log.info("Opruimen: %s", self.remote_folder or self.desktop)
+        self.worker = BrainWorker(self.cfg, self.remote_folder or self.desktop)
         self._threads.add(self.worker)  # referentie houden tot de thread echt klaar is
         self.worker.progress.connect(lambda s: self.say(s, 600))
         self.worker.finished_ok.connect(self.on_brain_done)
@@ -464,13 +485,27 @@ class RoombaWindow(QWidget):
         if not targets:
             self.state = "happy"
             extra = f"\nOvergeslagen: {skipped}" if skipped else ""
-            self.say(f"Alles is al schoon! ✨\n({seen} items bekeken, {method}){extra}", 7)
+            where = f"Map {self.remote_folder.name} is" if self.remote_folder else "Alles is"
+            self.say(f"{where} al schoon! ✨\n({seen} items bekeken, {method}){extra}", 7)
             self.queue = [Wait(0.3), Spin(1, 1.4), Wait(0.4), Call(self._back_to_charging)]
             return
 
         names = ", ".join(v.info.name for v in targets[:3]) + ("…" if len(targets) > 3 else "")
         extra = " (proefrun)" if self.cfg.dry_run else ""
         self.say(f"{len(targets)} stuk(s) afval gevonden{extra}!\n{names}", 3.5)
+
+        if self.remote_folder:
+            # Op afstand: we kunnen niet in Dolphins venster tekenen (Wayland),
+            # dus de roomba draait rondjes op zijn plek en de bestanden
+            # worden van alle kanten naar binnen gezogen.
+            self.state = "working"
+            q: list[Action] = [Wait(0.8)]
+            for i, v in enumerate(targets):
+                q += [Call(lambda v=v, i=i: self.begin_suck_remote(v, i)), Wait(1.15)]
+            q += [Wait(0.6), Call(self._remote_done)]
+            self.queue = q
+            return
+
         self.state = "leaving"
 
         # volgorde: steeds de dichtstbijzijnde
@@ -553,6 +588,93 @@ class RoombaWindow(QWidget):
     def _back_to_charging(self) -> None:
         self.state = "charging"
 
+    def begin_suck_remote(self, v: brain.Verdict, i: int) -> None:
+        ang = -math.pi / 2 + i * 2.4  # gouden-hoek-achtige spreiding rondom
+        rad = self.R * 2.8
+        pos = QPointF(self.robot.x + math.cos(ang) * rad, self.robot.y + math.sin(ang) * rad)
+        pos = QPointF(max(20, min(pos.x(), self.geom.width() - 20)), max(20, min(pos.y(), self.geom.height() - 20)))
+        self.begin_suck(v, pos)
+
+    def _remote_done(self) -> None:
+        folder = self.remote_folder
+        self.remote_folder = None
+        self.robot.heading = 0.0
+        self.sparks_at = self.now()
+        self._back_to_charging()
+        n = len(self.cleaned)
+        name = folder.name if folder else "de map"
+        if self.cfg.dry_run:
+            msg = f"Proefrun in 📁 {name}: {n} bestand(en)\nzou ik weggooien. Niets verwijderd."
+        else:
+            msg = f"📁 {name} opgeruimd!\n{n} bestand(en) in de prullenbak. 🗑️"
+        if self.failed:
+            msg += f"\n{len(self.failed)} lukte niet."
+        self.say(msg, 7)
+
+    # ------------------------------------------------------------ slepen naar een map
+    def roomba_pixmap(self) -> QPixmap:
+        R = self.R
+        dpr = self.devicePixelRatioF()
+        size = int((R * 2 + 24) * dpr)
+        pm = QPixmap(size, size)
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        c = (R * 2 + 24) / 2
+        p.translate(c, c)
+        art.draw_shadow(p, R * 0.95)
+        p.rotate(-90)
+        art.draw_roomba(p, R, "working", self.now(), self.robot.brush_angle, 1.0, self.robot.bin_fill)
+        p.end()
+        return pm
+
+    def start_folder_drag(self) -> None:
+        """Echte drag-and-drop: KDE tekent de roomba boven alle vensters.
+        Dolphin vertelt ons via D-Bus in welke map hij is neergezet."""
+        self.press_pos = None
+        self._drop_seen = False
+        self.robot_hidden = True
+        self.hover = False
+        self.update()
+        drag = QDrag(self)
+        drag.setMimeData(self.drop.mime_data())
+        pm = self.roomba_pixmap()
+        drag.setPixmap(pm)
+        drag.setHotSpot(QPointF(pm.width() / pm.devicePixelRatio() / 2,
+                                pm.height() / pm.devicePixelRatio() / 2).toPoint())
+        result = drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction | Qt.DropAction.LinkAction,
+                           Qt.DropAction.CopyAction)
+        log.info("Slepen klaar: %s", result)
+        # Het D-Bus-bericht kan net na het einde van de sleepactie binnenkomen.
+        QTimer.singleShot(1500, self._drag_timeout)
+
+    def _drag_timeout(self) -> None:
+        if not self._drop_seen and self.robot_hidden:
+            self.robot_hidden = False
+            self.say("Sleep me naar een map in Dolphin,\ndan stofzuig ik dáár. 📁", 4)
+
+    def on_folder_dropped(self, destination: str) -> None:
+        self._drop_seen = True
+        if folder_drop is None:
+            return
+        folder, why = folder_drop.resolve_folder(destination)
+        if self.busy():
+            self.robot_hidden = False
+            self.say("Ik ben al bezig! 🧹", 2)
+            return
+        if folder is None:
+            self.robot_hidden = False
+            self.say(f"Daar stofzuig ik liever niet:\n{why}.", 5)
+            return
+        self.start_cleaning(folder)
+
+    def choose_folder(self) -> None:
+        start = str(Path.home())
+        d = QFileDialog.getExistingDirectory(None, "Welke map moet de roomba opruimen?", start)
+        if d:
+            self.on_folder_dropped(d)
+
     def begin_suck(self, v: brain.Verdict, pos: QPointF) -> None:
         """Het moment van opzuigen: bestand naar de prullenbak + animatie."""
         size = self.layout().icon_px
@@ -604,6 +726,8 @@ class RoombaWindow(QWidget):
         r.brush_speed += (target_brush - r.brush_speed) * min(1.0, dt * 3)
         r.brush_angle = (r.brush_angle + r.brush_speed * 1100 * max(dt, 0.016)) % 360
 
+        if self.remote_folder is not None and self.state == "working":
+            r.heading += dt * 2.2  # rondjes draaien terwijl hij 'op afstand' zuigt
         if self.state == "thinking":
             # klein 'wakker worden'-wiebeltje
             r.heading = math.radians(4) * math.sin(t * 6)
@@ -642,7 +766,8 @@ class RoombaWindow(QWidget):
 
         target_alpha = 1.0 if t < self.bubble_until else 0.0
         if self.hover and not self.busy() and t >= self.bubble_until:
-            self.bubble_text = "Dubbelklik: opruimen\nRechtsklik: menu • slepen: verplaatsen"
+            self.bubble_text = ("Dubbelklik: bureaublad opruimen\nSleep me naar een Dolphin-map\n"
+                                "Shift+slepen: verplaatsen • Rechtsklik: menu")
             target_alpha = 1.0
         self.bubble_alpha += (target_alpha - self.bubble_alpha) * min(1.0, dt * 8)
 
@@ -695,7 +820,7 @@ class RoombaWindow(QWidget):
         t = self.now()
         R = self.R
         r = self.robot
-        docked = (abs(r.x - self.hub.x()) < 2 and abs(r.y - self.hub.y()) < 2)
+        docked = (abs(r.x - self.hub.x()) < 2 and abs(r.y - self.hub.y()) < 2) and not self.robot_hidden
 
         # laadstation (plaat)
         p.save()
@@ -758,6 +883,8 @@ class RoombaWindow(QWidget):
 
         # roomba
         p.save()
+        if self.robot_hidden:
+            p.setOpacity(0.0)
         p.translate(r.x, r.y)
         art.draw_shadow(p, R)
         p.rotate(math.degrees(r.heading))
@@ -814,6 +941,10 @@ class RoombaWindow(QWidget):
         self.hover = self.on_roomba(pos)
         if self.press_pos is not None and not self.busy():
             if not self.dragging and (pos - self.press_pos).manhattanLength() > 6:
+                shift = bool(ev.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+                if not shift and self.drop.ok:
+                    self.start_folder_drag()
+                    return
                 self.dragging = True
                 self.setCursor(Qt.CursorShape.ClosedHandCursor)
             if self.dragging:
@@ -846,8 +977,10 @@ class RoombaWindow(QWidget):
 
     def show_menu(self, global_pos) -> None:
         m = QMenu(self)
-        a_clean = m.addAction("🧹  Opruimen")
+        a_clean = m.addAction("🧹  Bureaublad opruimen")
         a_clean.setEnabled(not self.busy())
+        a_folder = m.addAction("📁  Andere map opruimen…")
+        a_folder.setEnabled(not self.busy())
         a_dry = m.addAction("Proefrun (niets echt weggooien)")
         a_dry.setCheckable(True)
         a_dry.setChecked(self.cfg.dry_run)
@@ -864,6 +997,8 @@ class RoombaWindow(QWidget):
         chosen = m.exec(global_pos)
         if chosen is a_clean:
             self.start_cleaning()
+        elif chosen is a_folder:
+            self.choose_folder()
         elif chosen is a_dry:
             self.cfg.dry_run = a_dry.isChecked()
             self.cfg.save()

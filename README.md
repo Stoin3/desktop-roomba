@@ -43,7 +43,8 @@ Of zonder installatie, direct vanuit de map: `python3 -m kde_roomba`.
 | Actie | Wat er gebeurt |
 |---|---|
 | **Dubbelklik** op de roomba | Opruimen starten |
-| **Slepen** | Laadstation verplaatsen (wordt onthouden) |
+| **Slepen naar een Dolphin-map** | De roomba stofzuigt die map (ook: rechtsklik → *Andere map opruimen…*) |
+| **Shift + slepen** | Laadstation verplaatsen (wordt onthouden) |
 | **Rechtsklik** | Menu: opruimen, proefrun, AI aan/uit, geschiedenis, prullenbak, instellingen, afsluiten |
 
 Alle weggegooide bestanden staan in de **prullenbak** en zijn met Dolphin terug te zetten.
@@ -51,6 +52,16 @@ Een logboek staat in `~/.local/state/kde-roomba/history.log`.
 
 > 💡 Probeer eerst een **Proefrun** (rechtsklik → Proefrun): dan rijdt hij wel rond,
 > maar gooit hij niets echt weg.
+
+### Naar een map slepen
+
+Pak de roomba op en laat hem in een Dolphin-venster vallen: hij ruimt dan díe map op (alleen de
+bestanden direct in die map, met dezelfde veiligheidsregels). Onder Wayland mag een programma niet
+zien welke map Dolphin toont; daarom gebruikt de roomba het sleepprotocol dat KDE voor Ark heeft
+(`org.kde.ark.DndExtract`): Dolphin vertelt na het neerzetten via D-Bus in welke map dat was. Omdat
+hij niet in Dolphins venster kan tekenen, zuigt hij de bestanden op afstand op vanuit zijn
+laadstation – in Dolphin zie je ze verdwijnen. Je thuismap zelf, verborgen mappen en mappen buiten
+je thuismap slaat hij over.
 
 ## Hoe beslist hij wat afval is?
 
