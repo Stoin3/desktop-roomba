@@ -60,9 +60,6 @@ class Config:
     # "auto", "columns" (boven→onder) of "rows" (links→rechts)
     icon_flow: str = "auto"
 
-    # --- Overig ----------------------------------------------------------
-    manage_kwin_rule: bool = True
-
     @classmethod
     def load(cls) -> "Config":
         path = config_dir() / "config.json"

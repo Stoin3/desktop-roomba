@@ -14,9 +14,18 @@ warn() { printf '\033[1;33m!!\033[0m  %s\n' "$*"; }
 ask() { local a; read -r -p "$1 [J/n] " a || true; [[ -z "$a" || "$a" =~ ^[JjYy] ]]; }
 
 # 1. Afhankelijkheden ---------------------------------------------------
-if ! python3 -c 'import PyQt6.QtWidgets' 2>/dev/null; then
-    say "PyQt6 installeren (sudo dnf install python3-pyqt6)…"
-    sudo dnf install -y python3-pyqt6
+# python3-pyqt6 (systeem-Qt) en layer-shell-qt (zit al in Plasma) – geen
+# wijzigingen aan je desktopinstellingen.
+missing=()
+rpm -q python3-pyqt6 >/dev/null 2>&1 || missing+=(python3-pyqt6)
+rpm -q layer-shell-qt >/dev/null 2>&1 || missing+=(layer-shell-qt)
+if [ ${#missing[@]} -gt 0 ]; then
+    say "Pakketten installeren: ${missing[*]}"
+    sudo dnf install -y "${missing[@]}"
+fi
+if python3 -c 'import PyQt6, os, sys; sys.exit(0 if os.path.isdir(os.path.join(os.path.dirname(PyQt6.__file__), "Qt6", "lib")) else 1)' 2>/dev/null; then
+    warn "Er is ook een PyQt6 via pip geïnstalleerd; die gaat voor en kan geen layer-shell gebruiken."
+    warn "Verwijder hem met:  pip uninstall PyQt6 PyQt6-Qt6 PyQt6-sip"
 fi
 
 # 2. Programma kopiëren -------------------------------------------------
@@ -59,4 +68,5 @@ else
 fi
 
 say "Klaar! Start met:  kde-roomba   (of via het menu: 'KDE Roomba')"
+say "Werkt iets niet? Kijk in ~/.local/state/kde-roomba/roomba.log"
 case ":$PATH:" in *":${BIN}:"*) ;; *) warn "${BIN} staat niet in je PATH; start met ${BIN}/kde-roomba";; esac

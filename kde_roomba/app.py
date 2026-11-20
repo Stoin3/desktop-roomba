@@ -15,6 +15,8 @@ import signal
 import subprocess
 import sys
 import time
+import logging
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -22,11 +24,13 @@ from typing import Callable
 from PyQt6.QtCore import QMimeDatabase, QPointF, QRect, QRectF, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from PyQt6.QtWidgets import QApplication, QFileIconProvider, QMenu, QWidget
-from PyQt6.QtCore import QFileInfo, QFile
+from PyQt6.QtCore import QFileInfo, QFile, QLockFile
 
-from . import APP_ID, __version__, art, brain, kwin
+from . import APP_ID, __version__, art, brain, kwin, wayland_layer
 from .config import Config, config_dir, state_dir
 from .desktop_layout import DesktopLayout
+
+log = logging.getLogger("kde-roomba")
 
 
 def wrap_angle(a: float) -> float:
@@ -291,8 +295,15 @@ class RoombaWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setMouseTracking(True)
-        self.setGeometry(geom)
-        self.setFixedSize(geom.size())
+        self.resize(geom.size())
+
+        # Wayland: via layer-shell-qt in de 'bottom'-laag (boven het
+        # bureaublad, onder vensters). De compositor bepaalt dan de grootte
+        # (het vrije bureaubladgebied) → zie resizeEvent.
+        self.layer_shell, how = wayland_layer.enable(self) if self.wayland else (False, "X11")
+        log.info("Vensterlaag: %s (%s)", "layer-shell" if self.layer_shell else "gewoon venster", how)
+        if not self.layer_shell:
+            self.setGeometry(geom)
 
         self.hub = self._initial_hub()
         self.robot = Robot(self.hub.x(), self.hub.y(), 0.0)
@@ -725,8 +736,20 @@ class RoombaWindow(QWidget):
 
         # tekstballon
         art.draw_bubble(p, QPointF(r.x, r.y - R), self.bubble_text, self.bubble_alpha,
-                        QRectF(self.rect()))
+                        QRectF(self.rect()), below_y=r.y + R)
         p.end()
+
+    def resizeEvent(self, ev) -> None:
+        sz = ev.size()
+        if sz.width() <= 0 or sz.height() <= 0:
+            return
+        if (sz.width(), sz.height()) != (self.geom.width(), self.geom.height()):
+            log.info("Bureaubladgebied: %dx%d", sz.width(), sz.height())
+            self.geom = QRect(self.geom.topLeft(), sz)
+            self._pos_cache = None
+            if not self.busy():
+                self.hub = self._initial_hub()
+                self.robot.x, self.robot.y = self.hub.x(), self.hub.y()
 
     # ------------------------------------------------------------ muis
     def on_roomba(self, pos: QPointF) -> bool:
@@ -826,7 +849,7 @@ def trash_file(path: Path) -> bool:
         if ok:
             return True
     except Exception as exc:  # noqa: BLE001
-        print(f"[kde-roomba] moveToTrash faalde: {exc}")
+        log.warning("moveToTrash faalde: %s", exc)
     for cmd in (["gio", "trash", "--", str(path)], ["kioclient6", "move", str(path), "trash:/"]):
         if shutil.which(cmd[0]):
             if subprocess.run(cmd, capture_output=True).returncode == 0:
@@ -839,41 +862,93 @@ def open_url(url: str) -> None:
         subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def notify(title: str, body: str) -> None:
+    """Bureaubladmelding, zodat fouten nooit 'stil' zijn."""
+    if shutil.which("notify-send"):
+        subprocess.Popen(["notify-send", "-a", "KDE Roomba", "-i", "edit-clear-all", title, body],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def setup_logging() -> Path:
+    d = state_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    logfile = d / "roomba.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[logging.FileHandler(logfile, mode="w", encoding="utf-8"), logging.StreamHandler()],
+    )
+    return logfile
+
+
 def main() -> int:
-    QGuiApplication.setDesktopFileName(APP_ID)  # Wayland app_id → KWin-regel
+    logfile = setup_logging()
+    try:
+        return _main(logfile)
+    except Exception:  # noqa: BLE001
+        log.error("Opstarten mislukt:\n%s", traceback.format_exc())
+        notify("KDE Roomba kon niet starten", f"Zie {logfile}")
+        return 1
+
+
+def _main(logfile: Path) -> int:
+    QGuiApplication.setDesktopFileName(APP_ID)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_ID)
     app.setApplicationDisplayName("KDE Roomba")
     app.setApplicationVersion(__version__)
     app.setQuitOnLastWindowClosed(True)
     signal.signal(signal.SIGINT, lambda *_: app.quit())
+    log.info("KDE Roomba %s, Qt %s, platform %s, sessie %s/%s", __version__,
+             __import__("PyQt6.QtCore", fromlist=["QT_VERSION_STR"]).QT_VERSION_STR,
+             app.platformName(), os.environ.get("XDG_SESSION_TYPE", "?"),
+             os.environ.get("XDG_CURRENT_DESKTOP", "?"))
+
+    # Fouten tijdens het draaien: loggen + één melding, niet crashen.
+    shown = {"n": 0}
+
+    def excepthook(etype, value, tb):
+        log.error("Onverwachte fout:\n%s", "".join(traceback.format_exception(etype, value, tb)))
+        if shown["n"] == 0:
+            notify("KDE Roomba: er ging iets mis", f"{value}\nZie {logfile}")
+        shown["n"] += 1
+
+    sys.excepthook = excepthook
+
+    # Maar één roomba tegelijk.
+    lock = QLockFile(str(state_dir() / "roomba.lock"))
+    lock.setStaleLockTime(0)
+    if not lock.tryLock(200):
+        log.info("Er draait al een KDE Roomba.")
+        notify("KDE Roomba draait al", "Hij staat al op je bureaublad (rechtsklik → Afsluiten om te stoppen).")
+        return 0
+
+    # Een eerdere versie zette een KWin-vensterregel; die ruimen we op.
+    try:
+        if kwin.remove_rule_if_present():
+            log.info("Oude KWin-vensterregel van KDE Roomba verwijderd.")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Opruimen oude KWin-regel mislukt: %s", exc)
 
     cfg = Config.load()
     screen = app.primaryScreen()
     geom = screen.availableGeometry()
-
-    if cfg.manage_kwin_rule and os.environ.get("XDG_CURRENT_DESKTOP", "").upper().find("KDE") >= 0:
-        try:
-            if kwin.ensure_rule(geom.x(), geom.y(), geom.width(), geom.height()):
-                time.sleep(0.4)  # KWin even laten herladen
-        except Exception as exc:  # noqa: BLE001
-            print(f"[kde-roomba] KWin-regel instellen mislukt: {exc}")
+    log.info("Scherm %s: %s, beschikbaar %s", screen.name(), screen.geometry(), geom)
 
     w = RoombaWindow(cfg, geom)
     w.show()
+    log.info("Venster getoond.")
+    if w.wayland and not w.layer_shell:
+        w.say("Let op: layer-shell-qt niet beschikbaar,\nik draai als gewoon venster.", 6)
 
-    # Scherm(indeling) veranderd? Opnieuw passend maken.
     def on_geom(_g=None):
+        if w.layer_shell:
+            return  # de compositor regelt de grootte
         g = screen.availableGeometry()
         if g != w.geom:
-            if cfg.manage_kwin_rule:
-                kwin.ensure_rule(g.x(), g.y(), g.width(), g.height())
-            w.geom = g
-            w.setFixedSize(g.size())
             w.setGeometry(g)
-            if not w.busy():
-                w.hub = w._initial_hub()
-                w.robot.x, w.robot.y = w.hub.x(), w.hub.y()
 
     screen.availableGeometryChanged.connect(on_geom)
-    return app.exec()
+    rc = app.exec()
+    lock.unlock()
+    return rc

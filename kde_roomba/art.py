@@ -321,7 +321,8 @@ def draw_hub_tower(p: QPainter, r: float, t: float, charging: bool) -> None:
 # Tekstballon
 # --------------------------------------------------------------------------
 
-def draw_bubble(p: QPainter, anchor: QPointF, text: str, alpha: float, bounds: QRectF) -> QRectF:
+def draw_bubble(p: QPainter, anchor: QPointF, text: str, alpha: float, bounds: QRectF,
+                below_y: float | None = None) -> QRectF:
     if alpha <= 0 or not text:
         return QRectF()
     f = QFont("Sans")
@@ -337,7 +338,8 @@ def draw_bubble(p: QPainter, anchor: QPointF, text: str, alpha: float, bounds: Q
     x = max(bounds.left() + 4, min(x, bounds.right() - w - 4))
     flip = y < bounds.top() + 4
     if flip:
-        y = anchor.y() + 12 + 2 * 0  # onder het anker
+        anchor = QPointF(anchor.x(), below_y if below_y is not None else anchor.y())
+        y = anchor.y() + 12  # onder de roomba
     rect = QRectF(x, y, w, h)
     a = int(255 * alpha)
     path = QPainterPath()

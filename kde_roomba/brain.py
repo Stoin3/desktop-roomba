@@ -14,6 +14,7 @@ Werkwijze
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -353,7 +354,7 @@ def classify(cfg: Config, items: list[FileInfo], progress=None) -> tuple[list[Ve
             try:
                 res = ai_classify_batch(cfg, batch)
             except AIUnavailable as exc:
-                print(f"[kde-roomba] AI-fout, terugval op heuristiek: {exc}")
+                logging.getLogger("kde-roomba").warning("AI-fout, terugval op heuristiek: %s", exc)
                 res = {}
                 method = f"AI ({cfg.model}) + heuristiek"
             for info in batch:

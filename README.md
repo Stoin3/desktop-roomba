@@ -90,12 +90,13 @@ Herstart de roomba na het wijzigen (rechtsklik → Afsluiten, dan `kde-roomba`).
 
 ## Technische notities
 
-- **Wayland (standaard op Fedora KDE):** een programma mag zijn venster daar niet zelf
-  positioneren of 'onder alle vensters' zetten. De roomba maakt daarom automatisch een
-  **KWin-vensterregel** aan (`~/.config/kwinrulesrc`, groep `kde-roomba-overlay`) die het
-  transparante venster over het bureaublad legt, onder je andere vensters houdt en uit de
-  taakbalk/alt-tab weert. Alleen de roomba zelf vangt muisklikken; de rest van het venster
-  laat klikken door naar je bureaublad (input-region). Uitzetten: `"manage_kwin_rule": false`.
+- **Er wordt niets aan je KDE-instellingen veranderd.** Op Wayland gebruikt de roomba
+  `layer-shell-qt`, dezelfde (al geïnstalleerde) bibliotheek waarmee Plasma zijn panelen en
+  bureaublad tekent. Daarmee vraagt hij de compositor om een laag boven het bureaublad maar
+  onder je vensters, zonder taakbalkknop en zonder focus te stelen. Alleen de roomba zelf vangt
+  muisklikken; ernaast klik je gewoon op je bureaublad. Op X11 gebeurt hetzelfde met
+  standaard-vensterhints.
+- Versie 1.0.0 schreef een KWin-vensterregel; die wordt bij het starten automatisch weer verwijderd.
 - **Iconposities:** de roomba leest de posities uit
   `~/.config/plasma-org.kde.plasma.desktop-appletsrc`; voor automatisch geplaatste iconen
   bootst hij Plasma's raster na (mappen eerst, dan alfabetisch, kolom voor kolom). Dat is een
@@ -103,6 +104,19 @@ Herstart de roomba na het wijzigen (rechtsklik → Afsluiten, dan `kde-roomba`).
   (in pixels) of `icon_flow` (`"columns"` of `"rows"`) bij.
 - Alleen het **primaire scherm** wordt gebruikt.
 - Bestanden gaan via `QFile.moveToTrash` (freedesktop-prullenbak), met `gio trash` als terugval.
+
+## Problemen oplossen
+
+Gebeurt er niets? Start hem in Konsole, dan zie je meteen wat er misgaat:
+
+```bash
+kde-roomba
+```
+
+Hetzelfde staat in `~/.local/state/kde-roomba/roomba.log`. Fouten verschijnen ook als
+bureaubladmelding. Let op de regel `Vensterlaag:`; daar hoort `layer-shell` te staan.
+Staat er `PyQt6 komt uit pip`, verwijder dan de pip-versie
+(`pip uninstall PyQt6 PyQt6-Qt6 PyQt6-sip`) zodat de Fedora-versie (`python3-pyqt6`) wordt gebruikt.
 
 ## Verwijderen
 
