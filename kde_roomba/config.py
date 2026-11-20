@@ -63,6 +63,13 @@ class Config:
     # Extra verschuiving (pixels) als de roomba er structureel naast zit.
     icon_offset_x: int = 0
     icon_offset_y: int = 0
+    # Dolphin-venster (rondrijden in een map): breedte Plaatsen-paneel en
+    # hoogte werkbalk in pixels; -1 = automatisch schatten.
+    dolphin_panel_width: int = -1
+    dolphin_toolbar_height: int = -1
+    # Bij slepen naar een map echt door het Dolphin-venster rijden.
+    drive_in_dolphin: bool = True
+
     # "auto" (= Plasma-instelling), "columns" (boven→onder) of "rows" (links→rechts)
     icon_flow: str = "auto"
 

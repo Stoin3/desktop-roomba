@@ -55,13 +55,27 @@ Een logboek staat in `~/.local/state/kde-roomba/history.log`.
 
 ### Naar een map slepen
 
-Pak de roomba op en laat hem in een Dolphin-venster vallen: hij ruimt dan díe map op (alleen de
-bestanden direct in die map, met dezelfde veiligheidsregels). Onder Wayland mag een programma niet
-zien welke map Dolphin toont; daarom gebruikt de roomba het sleepprotocol dat KDE voor Ark heeft
-(`org.kde.ark.DndExtract`): Dolphin vertelt na het neerzetten via D-Bus in welke map dat was. Omdat
-hij niet in Dolphins venster kan tekenen, zuigt hij de bestanden op afstand op vanuit zijn
-laadstation – in Dolphin zie je ze verdwijnen. Je thuismap zelf, verborgen mappen en mappen buiten
-je thuismap slaat hij over.
+Pak de roomba op en laat hem in een Dolphin-venster vallen: hij rijdt dan écht door dat venster
+naar de bestanden, zuigt het afval op en rijdt terug naar zijn laadstation. Alleen de bestanden
+direct in die map, met dezelfde veiligheidsregels.
+
+Hoe dat onder Wayland kan (waar programma's elkaars vensters niet mogen zien):
+
+1. **Welke map?** De roomba gebruikt het sleepprotocol dat KDE voor Ark heeft
+   (`org.kde.ark.DndExtract`): Dolphin vertelt na het neerzetten via D-Bus in welke map dat was.
+2. **Waar staat Dolphin?** De roomba laadt via D-Bus een klein, tijdelijk KWin-script dat de
+   vensterposities terugstuurt, en verwijdert het meteen weer. Er wordt niets opgeslagen.
+3. **Boven Dolphin tekenen:** tijdens de ronde gaat de roomba tijdelijk naar de bovenste
+   layer-shell-laag, daarna terug naar het bureaublad. Klikken naast de roomba blijven gewoon
+   naar Dolphin gaan.
+4. **Waar staan de bestanden?** Berekend met Dolphin's eigen formules en instellingen
+   (weergave, icoongrootte, sortering; `dolphinrc` en weergave-eigenschappen). De breedte van het
+   Plaatsen-paneel en de hoogte van de werkbalk worden geschat; zit hij ernaast, stel dan
+   `dolphin_panel_width` / `dolphin_toolbar_height` in (pixels).
+
+Staat Dolphin op een ander scherm dan de roomba, of is KWin niet bereikbaar, dan zuigt hij de
+bestanden op afstand op vanuit zijn laadstation. Uitzetten kan met `"drive_in_dolphin": false`.
+Je thuismap zelf, verborgen mappen en mappen buiten je thuismap slaat hij over.
 
 ## Hoe beslist hij wat afval is?
 

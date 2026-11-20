@@ -23,16 +23,17 @@ from typing import Callable
 
 from PyQt6.QtCore import QMimeDatabase, QPointF, QRect, QRectF, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QDrag, QFontMetrics, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRegion
-from PyQt6.QtWidgets import QApplication, QFileDialog, QFileIconProvider, QMenu, QWidget
+from PyQt6.QtWidgets import QApplication, QFileDialog, QFileIconProvider, QMenu, QStyle, QWidget
 from PyQt6.QtCore import QFileInfo, QFile, QLockFile
 
 from . import APP_ID, __version__, art, brain, kwin, wayland_layer
 
 try:
-    from . import folder_drop
+    from . import folder_drop, kwin_windows
 except ImportError as _exc:  # PyQt6.QtDBus ontbreekt: slepen naar mappen uit
-    folder_drop = None
+    folder_drop = kwin_windows = None
     _FOLDER_DROP_ERROR = str(_exc)
+from .dolphin_layout import DolphinLayout, Metrics
 from .config import Config, config_dir, state_dir
 from .desktop_layout import DesktopLayout
 
@@ -356,6 +357,10 @@ class RoombaWindow(QWidget):
             log.warning("Slepen naar mappen niet beschikbaar: %s", _FOLDER_DROP_ERROR)
             self.drop = type("NoDrop", (), {"ok": False})()
         self._drop_seen = False
+        self.kwinq = kwin_windows.WindowQuery() if kwin_windows is not None else None
+        self.dolphin: dict | str | None = None  # None / "pending" / {"client": (x, y, w, h)}
+        self.remote_spin = False
+        self.raised = False
 
         self.say("Hoi! Dubbelklik op mij om je bureaublad\nop te ruimen, of sleep me naar een map.", 6)
 
@@ -494,11 +499,25 @@ class RoombaWindow(QWidget):
         extra = " (proefrun)" if self.cfg.dry_run else ""
         self.say(f"{len(targets)} stuk(s) afval gevonden{extra}!\n{names}", 3.5)
 
+        if self.remote_folder and self.dolphin == "pending":
+            # nog even wachten op KWin (max ~3 s)
+            self._kwin_wait = getattr(self, "_kwin_wait", 0) + 1
+            if self._kwin_wait < 15:
+                QTimer.singleShot(200, lambda: self.on_brain_done(targets, method, seen, skipped))
+                return
+            self.dolphin = None
+        self._kwin_wait = 0
+
+        if self.remote_folder and isinstance(self.dolphin, dict):
+            self.queue = self._drive_in_dolphin(targets)
+            return
+
         if self.remote_folder:
             # Op afstand: we kunnen niet in Dolphins venster tekenen (Wayland),
             # dus de roomba draait rondjes op zijn plek en de bestanden
             # worden van alle kanten naar binnen gezogen.
             self.state = "working"
+            self.remote_spin = True
             q: list[Action] = [Wait(0.8)]
             for i, v in enumerate(targets):
                 q += [Call(lambda v=v, i=i: self.begin_suck_remote(v, i)), Wait(1.15)]
@@ -587,6 +606,84 @@ class RoombaWindow(QWidget):
 
     def _back_to_charging(self) -> None:
         self.state = "charging"
+        self.remote_spin = False
+        self._lower()
+
+    # ------------------------------------------------------------ door Dolphin rijden
+    def _raise(self) -> None:
+        if wayland_layer.set_layer(wayland_layer.LAYER_TOP):
+            self.raised = True
+            log.info("Tijdelijk boven alle vensters (layer-shell: top)")
+
+    def _lower(self) -> None:
+        if self.raised and wayland_layer.set_layer(wayland_layer.LAYER_BOTTOM):
+            self.raised = False
+
+    def dolphin_metrics(self) -> Metrics:
+        fm = QFontMetrics(QApplication.font())
+        style = QApplication.style()
+        margin = style.pixelMetric(QStyle.PixelMetric.PM_SizeGripSize) if style else 3
+        return Metrics(avg_char=fm.averageCharWidth(), line_spacing=fm.lineSpacing(),
+                       font_height=fm.height(), grid_margin=margin)
+
+    def _dolphin_layout(self, folder: Path) -> DolphinLayout:
+        return DolphinLayout(self.cfg, folder, self.dolphin["client"], self.dolphin_metrics())
+
+    def _drive_in_dolphin(self, targets: list) -> list[Action]:
+        folder = self.remote_folder
+        lay = self._dolphin_layout(folder)
+        log.info("Dolphin-raster: %s", lay.describe())
+        start = lay.positions()
+        for v in targets:
+            p = start.get(v.info.name)
+            log.info("  doel %s op %s", v.info.name, f"({p[0]:.0f}, {p[1]:.0f})" if p else "?")
+        vx, vy, vw, vh = lay.view
+        self.state = "leaving"
+        self._dolphin_icon = lay.icon
+        q: list[Action] = [Call(self._raise), Wait(0.5), Reverse(self.R * 1.5),
+                           Call(lambda: self._set_state("working"))]
+        # volgorde: zoals Dolphin ze toont (rij voor rij) – dat rijdt het mooist
+        order = sorted(targets, key=lambda v: (start.get(v.info.name, (0, 1e9))[1], start.get(v.info.name, (0, 0))[0]))
+        for v in order:
+            q += self._visit_dolphin(v, folder, (vx, vy, vw, vh))
+        q += self._return_home()[:-1] + [Call(self._remote_drive_done)]
+        return q
+
+    def _visit_dolphin(self, v: brain.Verdict, folder: Path, view) -> list[Action]:
+        cache: dict[str, QPointF] = {}
+        vx, vy, vw, vh = view
+
+        def pos() -> QPointF:
+            if "p" in cache:
+                return cache["p"]
+            # lui: Dolphin schuift de overige bestanden op nadat er een weg is
+            now = time.monotonic()
+            pc = getattr(self, "_dpos_cache", None)
+            if not pc or now - pc[0] > 0.5:
+                pc = (now, self._dolphin_layout(folder).positions())
+                self._dpos_cache = pc
+            x, y = pc[1].get(v.info.name, (vx + vw / 2, vy + vh / 2))
+            x = max(vx + self.R * 0.6, min(x, vx + vw - self.R * 0.6))
+            y = max(vy + self.R * 0.6, min(y, vy + vh - self.R * 0.6))
+            return self._clamp_target(QPointF(x, y))
+
+        def lock() -> None:
+            cache["p"] = pos()
+
+        return [DriveTo(pos, stop_short=self.R * 0.9), Call(lock), Suck(v, pos), Wait(0.1)]
+
+    def _remote_drive_done(self) -> None:
+        self._dpos_cache = None
+        self._docked()
+        folder = self.remote_folder
+        self.remote_folder = None
+        n = len(self.cleaned)
+        name = folder.name if folder else "de map"
+        msg = (f"Proefrun in 📁 {name}: {n} bestand(en)\nzou ik weggooien." if self.cfg.dry_run
+               else f"📁 {name} opgeruimd!\n{n} bestand(en) in de prullenbak. 🗑️")
+        if self.failed:
+            msg += f"\n{len(self.failed)} lukte niet."
+        self.say(msg, 7)
 
     def begin_suck_remote(self, v: brain.Verdict, i: int) -> None:
         ang = -math.pi / 2 + i * 2.4  # gouden-hoek-achtige spreiding rondom
@@ -667,7 +764,32 @@ class RoombaWindow(QWidget):
             self.robot_hidden = False
             self.say(f"Daar stofzuig ik liever niet:\n{why}.", 5)
             return
+        self.dolphin = None
+        if (self.cfg.drive_in_dolphin and self.layer_shell and self.kwinq is not None
+                and destination and self.kwinq.available()):
+            self.dolphin = "pending"
+            self.kwinq.query(lambda data, f=folder: self._on_windows(data, f))
         self.start_cleaning(folder)
+
+    def _on_windows(self, data: dict | None, folder: Path) -> None:
+        """KWin's antwoord: waar staat het Dolphin-venster, t.o.v. ons venster?"""
+        self.dolphin = None
+        if not data:
+            return
+        h = self.windowHandle()
+        out_name = h.screen().name() if h and h.screen() else ""
+        area = data.get("areas", {}).get(out_name)
+        win = kwin_windows.pick_dolphin_window(data, folder)
+        if not win or not area:
+            log.info("Dolphin-venster niet gevonden (scherm %s, %d vensters)", out_name, len(data.get("windows", [])))
+            return
+        # ons venster beslaat het bruikbare gebied (zonder panelen) van ons scherm
+        x, y = win["x"] - area["x"], win["y"] - area["y"]
+        if not (-win["w"] / 2 < x < self.width() - win["w"] / 2 and -win["h"] / 2 < y < self.height() - win["h"] / 2):
+            log.info("Dolphin staat op een ander scherm (%s); ik zuig op afstand.", win.get("output"))
+            return
+        self.dolphin = {"client": (x, y, win["w"], win["h"]), "caption": win.get("caption", "")}
+        log.info("Dolphin-venster '%s' op (%d, %d) %dx%d", win.get("caption"), x, y, win["w"], win["h"])
 
     def choose_folder(self) -> None:
         start = str(Path.home())
@@ -677,7 +799,8 @@ class RoombaWindow(QWidget):
 
     def begin_suck(self, v: brain.Verdict, pos: QPointF) -> None:
         """Het moment van opzuigen: bestand naar de prullenbak + animatie."""
-        size = self.layout().icon_px
+        size = getattr(self, "_dolphin_icon", 0) if self.remote_folder else 0
+        size = size or self.layout().icon_px
         pm = self.file_pixmap(v.info, size)
         ok = True
         if not self.cfg.dry_run:
@@ -693,7 +816,8 @@ class RoombaWindow(QWidget):
         self.cleaned.append(v)
         self.robot.bin_fill = min(1.0, self.robot.bin_fill + 0.2)
         self.flying.append(FlyingIcon(pm, QPointF(pos)))
-        self.say(f"Slurp! {v.info.name}\n{v.reason}", 2.2)
+        reason = v.reason if len(v.reason) <= 48 else v.reason[:46].rsplit(",", 1)[0] + "…"
+        self.say(f"Slurp! {v.info.name}\n{reason}", 2.2)
         for _ in range(26):
             a = random.uniform(0, 2 * math.pi)
             rad = random.uniform(4, size * 0.7)
@@ -726,7 +850,7 @@ class RoombaWindow(QWidget):
         r.brush_speed += (target_brush - r.brush_speed) * min(1.0, dt * 3)
         r.brush_angle = (r.brush_angle + r.brush_speed * 1100 * max(dt, 0.016)) % 360
 
-        if self.remote_folder is not None and self.state == "working":
+        if self.remote_spin and self.state == "working":
             r.heading += dt * 2.2  # rondjes draaien terwijl hij 'op afstand' zuigt
         if self.state == "thinking":
             # klein 'wakker worden'-wiebeltje

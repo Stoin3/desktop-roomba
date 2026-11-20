@@ -90,6 +90,20 @@ def kde_primary_output() -> str | None:
     return prim[0].get("name") if prim else None
 
 
+_STATE: dict = {}
+LAYER_OVERLAY = 3
+
+
+def set_layer(layer: int) -> bool:
+    """Laag wijzigen terwijl het venster zichtbaar is (bijv. tijdelijk boven
+    alle vensters om door Dolphin te rijden). Werkt na enable()."""
+    fn, win = _STATE.get("setLayer"), _STATE.get("win")
+    if not fn or not win:
+        return False
+    fn(win, layer)
+    return True
+
+
 def enable(widget, layer: int = LAYER_BOTTOM, screen=None) -> tuple[bool, str]:
     """Moet aangeroepen worden vóórdat het venster getoond wordt.
     Geeft (gelukt, uitleg) terug."""
@@ -126,6 +140,7 @@ def enable(widget, layer: int = LAYER_BOTTOM, screen=None) -> tuple[bool, str]:
     if not win:
         return False, "LayerShellQt::Window::get gaf niets terug"
     fns["setLayer"](win, layer)
+    _STATE["setLayer"], _STATE["win"] = fns["setLayer"], win
     fns["setAnchors"](win, ANCHOR_ALL)
     fns["setExclusiveZone"](win, 0)
     fns["setKeyboardInteractivity"](win, KEYBOARD_ON_DEMAND)
