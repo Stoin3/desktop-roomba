@@ -78,13 +78,13 @@ sleep 0.5
 rm -f "$LOG"
 say "Roomba starten…"
 setsid "${BIN}/kde-roomba" >/dev/null 2>&1 < /dev/null &
-for _ in $(seq 1 20); do
-    grep -q "Venster getoond" "$LOG" 2>/dev/null && break
+for _ in $(seq 1 24); do
+    grep -qE "Status na 3 s|ERROR" "$LOG" 2>/dev/null && break
     sleep 0.5
 done
 if grep -q "Venster getoond" "$LOG" 2>/dev/null; then
-    say "De roomba staat rechtsonder op je bureaublad. Dubbelklik erop om op te ruimen!"
-    grep "Vensterlaag" "$LOG" | sed 's/^[^ ]* [^ ]* INFO /    /'
+    say "De roomba staat rechtsonder op je bureaublad (op het scherm waar je nu werkt). Dubbelklik erop!"
+    grep -E "Scherm [0-9]|Vensterlaag|Eerste frame|Status na" "$LOG" | sed 's/^[^ ]* [^ ]* [A-Z]* /    /'
 else
     warn "De roomba lijkt niet gestart. Laatste regels van $LOG:"
     tail -n 25 "$LOG" 2>/dev/null || warn "(geen logbestand – start hem handmatig met: ${BIN}/kde-roomba)"

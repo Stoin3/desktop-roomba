@@ -635,6 +635,12 @@ class RoombaWindow(QWidget):
 
     # ------------------------------------------------------------ painting
     def paintEvent(self, _ev) -> None:
+        if not getattr(self, "_painted_once", False):
+            self._painted_once = True
+            h = self.windowHandle()
+            log.info("Eerste frame getekend: venster %dx%d, roomba op (%d, %d), scherm %s, schaal %.2f",
+                     self.width(), self.height(), self.robot.x, self.robot.y,
+                     h.screen().name() if h and h.screen() else "?", self.devicePixelRatioF())
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
@@ -936,11 +942,23 @@ def _main(logfile: Path) -> int:
     cfg = Config.load()
     screen = app.primaryScreen()
     geom = screen.availableGeometry()
-    log.info("Scherm %s: %s, beschikbaar %s", screen.name(), screen.geometry(), geom)
+    for i, sc in enumerate(app.screens()):
+        g = sc.geometry()
+        log.info("Scherm %d: %s %s %s %dx%d op (%d,%d), schaal %.2f%s", i, sc.name(), sc.manufacturer(), sc.model(),
+                 g.width(), g.height(), g.x(), g.y(), sc.devicePixelRatio(),
+                 " (primair volgens Qt)" if sc == screen else "")
 
     w = RoombaWindow(cfg, geom)
     w.show()
     log.info("Venster getoond.")
+
+    def report():
+        h = w.windowHandle()
+        log.info("Status na 3 s: zichtbaar=%s, blootgesteld=%s, scherm=%s, venster %dx%d, getekend=%s",
+                 w.isVisible(), h.isExposed() if h else "?", h.screen().name() if h and h.screen() else "?",
+                 w.width(), w.height(), getattr(w, "_painted_once", False))
+
+    QTimer.singleShot(3000, report)
     if w.wayland and not w.layer_shell:
         w.say("Let op: layer-shell-qt niet beschikbaar,\nik draai als gewoon venster.", 6)
 

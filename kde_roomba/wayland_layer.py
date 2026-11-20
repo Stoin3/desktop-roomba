@@ -38,6 +38,9 @@ _SYMS = {
     "setKeyboardInteractivity": "_ZN12LayerShellQt6Window24setKeyboardInteractivityENS0_21KeyboardInteractivityE",
     "setActivateOnShow": "_ZN12LayerShellQt6Window17setActivateOnShowEb",
 }
+# Optioneel (versie-afhankelijk): op het actieve scherm plaatsen.
+_ACTIVE_SCREEN = "_ZN12LayerShellQt6Window26setWantsToBeOnActiveScreenEb"           # >= 6.6
+_SCREEN_CONFIG = "_ZN12LayerShellQt6Window22setScreenConfigurationENS0_19ScreenConfigurationE"  # oudere
 
 
 def _uses_bundled_qt() -> bool:
@@ -102,4 +105,18 @@ def enable(widget, layer: int = LAYER_BOTTOM) -> tuple[bool, str]:
     fns["setExclusiveZone"](win, 0)
     fns["setKeyboardInteractivity"](win, KEYBOARD_ON_DEMAND)
     fns["setActivateOnShow"](win, False)
-    return True, "layer-shell (bottom-laag)"
+
+    # Laat de compositor het scherm kiezen (het actieve scherm), in plaats
+    # van Qt's 'eerste' scherm – dat kan een uitgeschakelde/tweede monitor zijn.
+    where = "scherm van Qt"
+    if hasattr(lib, _ACTIVE_SCREEN):
+        f = getattr(lib, _ACTIVE_SCREEN)
+        f.argtypes, f.restype = [ctypes.c_void_p, ctypes.c_bool], None
+        f(win, True)
+        where = "actieve scherm"
+    elif hasattr(lib, _SCREEN_CONFIG):
+        f = getattr(lib, _SCREEN_CONFIG)
+        f.argtypes, f.restype = [ctypes.c_void_p, ctypes.c_int], None
+        f(win, 1)  # ScreenFromCompositor
+        where = "scherm van de compositor"
+    return True, f"layer-shell (bottom-laag, {where})"
