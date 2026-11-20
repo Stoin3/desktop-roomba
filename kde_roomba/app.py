@@ -882,6 +882,9 @@ def setup_logging() -> Path:
 
 
 def main() -> int:
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        print("KDE Roomba hoort bij jouw bureaublad: start hem ZONDER sudo, gewoon:  kde-roomba", file=sys.stderr)
+        return 1
     logfile = setup_logging()
     try:
         return _main(logfile)

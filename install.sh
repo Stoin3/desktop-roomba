@@ -37,6 +37,10 @@ find "$PREFIX" -name '__pycache__' -prune -exec rm -rf {} +
 
 cat > "${BIN}/kde-roomba" <<LAUNCHER
 #!/usr/bin/env bash
+if [ "\$(id -u)" -eq 0 ]; then
+    echo "KDE Roomba hoort bij jouw bureaublad: start hem ZONDER sudo, gewoon:  kde-roomba" >&2
+    exit 1
+fi
 cd "${PREFIX}" && exec python3 -m kde_roomba "\$@"
 LAUNCHER
 chmod +x "${BIN}/kde-roomba"
@@ -67,6 +71,23 @@ else
     warn "Geen AI: de roomba gebruikt dan zijn ingebouwde regels (heuristiek)."
 fi
 
-say "Klaar! Start met:  kde-roomba   (of via het menu: 'KDE Roomba')"
-say "Werkt iets niet? Kijk in ~/.local/state/kde-roomba/roomba.log"
+# 4. Meteen starten en controleren ----------------------------------------
+LOG="${XDG_STATE_HOME:-$HOME/.local/state}/kde-roomba/roomba.log"
+pkill -f "python3 -m kde_roomba" 2>/dev/null || true
+sleep 0.5
+rm -f "$LOG"
+say "Roomba starten…"
+setsid "${BIN}/kde-roomba" >/dev/null 2>&1 < /dev/null &
+for _ in $(seq 1 20); do
+    grep -q "Venster getoond" "$LOG" 2>/dev/null && break
+    sleep 0.5
+done
+if grep -q "Venster getoond" "$LOG" 2>/dev/null; then
+    say "De roomba staat rechtsonder op je bureaublad. Dubbelklik erop om op te ruimen!"
+    grep "Vensterlaag" "$LOG" | sed 's/^[^ ]* [^ ]* INFO /    /'
+else
+    warn "De roomba lijkt niet gestart. Laatste regels van $LOG:"
+    tail -n 25 "$LOG" 2>/dev/null || warn "(geen logbestand – start hem handmatig met: ${BIN}/kde-roomba)"
+fi
+say "Later opnieuw starten: kde-roomba (zonder sudo) of via het menu: 'KDE Roomba'"
 case ":$PATH:" in *":${BIN}:"*) ;; *) warn "${BIN} staat niet in je PATH; start met ${BIN}/kde-roomba";; esac
