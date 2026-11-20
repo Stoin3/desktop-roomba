@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=KDE Roomba
+GenericName=Bureaublad-stofzuiger
+Comment=Een roomba die afval van je bureaublad opruimt met een lokaal AI-model
+Exec=@BIN@/kde-roomba
+Icon=edit-clear-all
+Terminal=false
+Categories=Utility;
+StartupNotify=false
+X-KDE-autostart-after=panel
+X-GNOME-Autostart-enabled=true
