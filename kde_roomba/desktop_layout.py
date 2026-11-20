@@ -1,39 +1,60 @@
-"""Schat de schermpositie van bureaublad-iconen in KDE Plasma.
+"""Berekent de schermpositie van bureaublad-iconen in KDE Plasma 6.
 
-Plasma bewaart handmatig geplaatste iconen in
-``~/.config/plasma-org.kde.plasma.desktop-appletsrc`` onder
-``[Containments][N][General] positions=...``. Plasma 6 gebruikt JSON per
-resolutie, Plasma 5 een kommagescheiden lijst. Formaat (na de kop met
-aantal stroken / items per strook): ``url, strook, positie-in-strook``.
+Nagebouwd uit Plasma's eigen code (plasma-desktop, containments/desktop):
 
-Staan iconen niet in die lijst (automatische indeling), dan zetten we ze in
-dezelfde volgorde als Plasma: mappen eerst, daarna alfabetisch, kolom voor
-kolom vanaf linksboven.
+* ``positioner.cpp`` – posities staan in
+  ``~/.config/plasma-org.kde.plasma.desktop-appletsrc``,
+  ``[Containments][N][General] positions=`` als JSON per schermresolutie:
+  ``{"1920x1080": [aantalStroken, perStrook, naam, strook, positie, ...]}``.
+* ``FolderView.qml`` – ``itemX = (rows ? pos : strook) * cellWidth`` en
+  ``itemY = (rows ? strook : pos) * cellHeight``; de celmaat wordt berekend
+  uit icoongrootte, gridUnit (lettergrootte) en de beschikbare ruimte.
+* ``main.xml`` – standaard: arrangement 0 (= rijen, links→rechts),
+  iconSize 3 (= 64 px), labelWidth 1, textLines 2.
 
-Dit is een benadering: de roomba hoeft alleen ongeveer bij het icoon uit te
-komen. Stel ``icon_cell_width``/``icon_cell_height`` bij in de config als
-het niet goed uitkomt.
+Iconen zonder opgeslagen positie worden gevuld zoals Plasma dat doet: in de
+eerste vrije cellen, mappen eerst, dan op naam.
 """
 
 from __future__ import annotations
 
 import configparser
 import json
+import logging
 import re
 import urllib.parse
 from pathlib import Path
 
 from .config import Config
 
+log = logging.getLogger("kde-roomba")
+
 APPLETSRC = Path("~/.config/plasma-org.kde.plasma.desktop-appletsrc").expanduser()
 
-# Plasma folderview iconSize-index → pixelgrootte
-ICON_SIZES = [16, 22, 32, 48, 64, 128]
+# FolderTools.js: iconSizes[iconSize] (Kirigami.Units.iconSizes)
+ICON_SIZES = [22, 32, 48, 64, 96, 128, 160, 192, 224, 256]
+SMALL_ICON = 16  # Kirigami.Units.iconSizes.small
+SMALL_SPACING = 4  # Kirigami.Units.smallSpacing
 
 
 class _CaseConfigParser(configparser.RawConfigParser):
     def optionxform(self, optionstr: str) -> str:  # behoud hoofdletters
         return optionstr
+
+
+def kconfig_unescape(value: str) -> str:
+    """KConfig schrijft o.a. \\\\, \\s, \\t, \\n en \\, in waarden."""
+    out, i = [], 0
+    while i < len(value):
+        c = value[i]
+        if c == "\\" and i + 1 < len(value):
+            n = value[i + 1]
+            out.append({"\\": "\\", "s": " ", "t": "\t", "n": "\n", "r": "\r", ";": ";", ",": ","}.get(n, "\\" + n))
+            i += 2
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
 
 
 def _read_folder_containment(screen_index: int = 0) -> dict[str, str]:
@@ -47,8 +68,7 @@ def _read_folder_containment(screen_index: int = 0) -> dict[str, str]:
         return {}
     best: dict[str, str] = {}
     for sec in cp.sections():
-        m = re.fullmatch(r"Containments\]\[(\d+)", sec)
-        if not m:
+        if not re.fullmatch(r"Containments\]\[(\d+)", sec):
             continue
         if cp.get(sec, "plugin", fallback="") != "org.kde.plasma.folder":
             continue
@@ -65,96 +85,109 @@ def _read_folder_containment(screen_index: int = 0) -> dict[str, str]:
     return best
 
 
-def _parse_positions(raw: str, area_w: int, area_h: int) -> tuple[list[str], int] | None:
-    raw = raw.strip()
+def _parse_positions(raw: str, screen_w: int, screen_h: int) -> list[str] | None:
+    raw = kconfig_unescape(raw.strip())
+    # Plasma zelf: readEntry("positions").replace("\\,", ",")
+    raw = raw.replace("\\,", ",")
     if not raw:
         return None
-    entries: list[str] | None = None
     if raw.startswith("{"):
         try:
-            data = json.loads(raw.replace("\\\\", "\\"))
-        except ValueError:
-            try:
-                data = json.loads(raw)
-            except ValueError:
-                return None
+            data = json.loads(raw)
+        except ValueError as exc:
+            log.warning("Iconposities niet te lezen: %s", exc)
+            return None
         if not isinstance(data, dict) or not data:
             return None
-        key = f"{area_w}x{area_h}"
-        if key in data:
-            entries = data[key]
-        else:
-            # kies de resolutie die het dichtst bij ligt
+        key = f"{screen_w}x{screen_h}"
+        if key not in data:
+
             def dist(k: str) -> float:
                 try:
                     w, h = (int(x) for x in k.split("x"))
-                    return abs(w - area_w) + abs(h - area_h)
+                    return abs(w - screen_w) + abs(h - screen_h)
                 except ValueError:
                     return 1e9
 
-            entries = data[min(data, key=dist)]
-    else:
+            key = min(data, key=dist)
+        entries = data[key]
+    else:  # Plasma 5: kommagescheiden lijst
         entries = [e.strip() for e in raw.split(",")]
-    if not entries or len(entries) < 2:
+    if not isinstance(entries, list) or len(entries) < 2:
         return None
-    try:
-        per_stripe = int(entries[1])
-    except ValueError:
-        per_stripe = 0
-    return [str(e) for e in entries[2:]], per_stripe
+    return [str(e) for e in entries[2:]]
 
 
 def _url_to_name(url: str) -> str:
-    if url.startswith("desktop:/"):
-        url = url[len("desktop:/") :]
-    elif url.startswith("file://"):
-        url = url[len("file://") :]
+    for prefix in ("desktop:/", "file://"):
+        if url.startswith(prefix):
+            url = url[len(prefix):]
     return urllib.parse.unquote(url).rstrip("/").split("/")[-1]
 
 
+def _extra(cell: int, container: int) -> int:
+    """FolderView.qml: calcExtraSpacing – restruimte eerlijk over de cellen verdelen."""
+    n = container // cell if cell > 0 else 0
+    return (max(container - n * cell, 0) // n) if n > 0 else 0
+
+
+def _int(general: dict[str, str], key: str, default: int) -> int:
+    try:
+        return int(general.get(key, default))
+    except ValueError:
+        return default
+
+
 class DesktopLayout:
-    def __init__(self, cfg: Config, area_x: int, area_y: int, area_w: int, area_h: int, scale: float = 1.0):
+    def __init__(self, cfg: Config, area_x: int, area_y: int, area_w: int, area_h: int,
+                 grid_unit: int = 18, screen_w: int = 0, screen_h: int = 0):
         self.cfg = cfg
         self.ax, self.ay, self.aw, self.ah = area_x, area_y, area_w, area_h
         general = _read_folder_containment()
-        try:
-            icon_idx = int(general.get("iconSize", "3"))
-        except ValueError:
-            icon_idx = 3
-        icon_px = ICON_SIZES[max(0, min(icon_idx, len(ICON_SIZES) - 1))]
-        self.icon_px = icon_px
-        # Benadering van Plasma's celgrootte (icoon + label + marges)
-        self.cell_w = cfg.icon_cell_width or int(max(icon_px * 1.9, icon_px + 64))
-        self.cell_h = cfg.icon_cell_height or int(icon_px + 52)
+
+        idx = _int(general, "iconSize", 3)
+        self.icon_px = ICON_SIZES[max(0, min(idx, len(ICON_SIZES) - 1))]
+        label_width = _int(general, "labelWidth", 1)
+        text_lines = _int(general, "textLines", 2)
+
+        min_w = max(self.icon_px + 2 * grid_unit + 2 * SMALL_SPACING, SMALL_ICON * (label_width * 2 + 4))
+        min_h = self.icon_px + grid_unit * text_lines + SMALL_SPACING * 3
+        self.cell_w = cfg.icon_cell_width or (min_w + _extra(min_w, area_w))
+        self.cell_h = cfg.icon_cell_height or (min_h + _extra(min_h, area_h))
 
         flow = cfg.icon_flow
         if flow == "auto":
-            # arrangement: 0 = Rows (links→rechts), 1 = Columns (boven→onder).
-            # Op het bureaublad is boven→onder de standaard.
-            flow = "rows" if general.get("arrangement") == "0" else "columns"
+            flow = "columns" if general.get("arrangement") == "1" else "rows"  # standaard 0 = rijen
         self.flow = flow
-        self.rows = max(1, (area_h - 2 * cfg.icon_margin_y) // self.cell_h)
-        self.cols = max(1, (area_w - 2 * cfg.icon_margin_x) // self.cell_w)
+        self.align_right = general.get("alignment") == "1"
+        self.rows = max(1, area_h // self.cell_h)
+        self.cols = max(1, area_w // self.cell_w)
 
         self.fixed: dict[str, tuple[int, int]] = {}  # naam -> (kolom, rij)
-        parsed = _parse_positions(general.get("positions", ""), area_w, area_h)
-        if parsed:
-            items, _per_stripe = parsed
+        items = _parse_positions(general.get("positions", ""), screen_w or area_w, screen_h or area_h)
+        if items:
             for i in range(0, len(items) - 2, 3):
                 try:
                     stripe, pos = int(items[i + 1]), int(items[i + 2])
                 except ValueError:
                     continue
-                col, row = (stripe, pos) if flow == "columns" else (pos, stripe)
+                col, row = (pos, stripe) if flow == "rows" else (stripe, pos)
                 self.fixed[_url_to_name(items[i])] = (col, row)
 
+    def describe(self) -> str:
+        return (f"cel {self.cell_w}x{self.cell_h}, icoon {self.icon_px}px, {self.flow}"
+                f"{', rechts uitgelijnd' if self.align_right else ''}, {len(self.fixed)} vaste posities")
+
     def cell_center(self, col: int, row: int) -> tuple[float, float]:
-        x = self.ax + self.cfg.icon_margin_x + col * self.cell_w + self.cell_w / 2
-        y = self.ay + self.cfg.icon_margin_y + row * self.cell_h + self.icon_px / 2 + 8
-        return x, y
+        x = col * self.cell_w + self.cell_w / 2
+        if self.align_right:
+            x = self.aw - x
+        # het icoon staat bovenin de cel (met wat opvulling), het label eronder
+        y = row * self.cell_h + SMALL_SPACING * 3 + self.icon_px / 2
+        return self.ax + x + self.cfg.icon_offset_x, self.ay + y + self.cfg.icon_offset_y
 
     def positions(self, names_dirs: list[tuple[str, bool]]) -> dict[str, tuple[float, float]]:
-        """Geeft het (geschatte) middelpunt van het icoon van elk item."""
+        """Geeft het middelpunt van het icoon van elk item."""
         result: dict[str, tuple[float, float]] = {}
         taken: set[tuple[int, int]] = set()
         for name, _ in names_dirs:
@@ -163,15 +196,14 @@ class DesktopLayout:
                 taken.add(c)
                 result[name] = self.cell_center(*c)
 
-        # Plasma: mappen eerst, dan op naam (hoofdletterongevoelig)
         rest = sorted((nd for nd in names_dirs if nd[0] not in result), key=lambda nd: (not nd[1], nd[0].lower()))
         idx = 0
         for name, _ in rest:
             while True:
-                if self.flow == "columns":
-                    c = (idx // self.rows, idx % self.rows)
-                else:
+                if self.flow == "rows":
                     c = (idx % self.cols, idx // self.cols)
+                else:
+                    c = (idx // self.rows, idx % self.rows)
                 idx += 1
                 if c not in taken:
                     break

@@ -98,3 +98,28 @@ def test_real_names_are_not_gibberish():
                  "README", "factuur-0042", "Steam", "Sober", "schrijfopdracht", "kerstkaart", "property",
                  "liberty", "angstschreeuw", "bananen", "Mississippi", "aaaa", "papa", "Instellingen", "tekst"):
         assert not brain.looks_like_gibberish(stem), stem
+
+
+def test_empty_html_and_markup_only_files_are_junk(tmp_path):
+    make(tmp_path, "pagina.html", b"<html><head></head><body>\n  \n</body></html>", age_days=1)
+    make(tmp_path, "leeg-ish.txt", b"   \n\n\t ", age_days=1)
+    make(tmp_path, "uihuijuh.txt", b"kjhkjh lkjhlkjh", age_days=1)
+    make(tmp_path, "boodschappen.txt", b"melk, brood", age_days=1)
+    make(tmp_path, "echt.html", b"<html><body><p>Dit is een echte pagina met inhoud over de vakantie in Frankrijk.</p></body></html>", age_days=1)
+    v, _, _ = verdicts(tmp_path)
+    assert v["pagina.html"].trash and v["leeg-ish.txt"].trash and v["uihuijuh.txt"].trash
+    assert not v["boodschappen.txt"].trash
+    assert not v["echt.html"].trash
+
+
+def test_strong_heuristics_override_hesitant_ai(tmp_path, monkeypatch):
+    make(tmp_path, "liuhliuhliuh.html", b"<html></html>", age_days=0.01)
+    make(tmp_path, "scriptie.pdf", b"%PDF" * 100, age_days=1)
+    cfg = Config()
+    monkeypatch.setattr(brain, "ollama_status", lambda c: (True, "ok"))
+    monkeypatch.setattr(brain, "ai_classify_batch",
+                        lambda c, b: {f.name: (False, "lijkt een webpagina") for f in b})
+    v, _ = brain.classify(cfg, brain.scan_desktop(cfg, tmp_path))
+    by = {x.info.name: x for x in v}
+    assert by["liuhliuhliuh.html"].trash
+    assert not by["scriptie.pdf"].trash

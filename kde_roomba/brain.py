@@ -41,6 +41,7 @@ class FileInfo:
     age_days: float
     mime: str
     snippet: str = ""
+    meaningful_chars: int | None = None  # letters/cijfers aan echte tekst (alleen tekstbestanden)
     score: float = 0.0
     hints: list[str] = field(default_factory=list)
     protected_reason: str | None = None
@@ -98,6 +99,29 @@ def desktop_dir() -> Path:
 TEXT_EXTS = {".txt", ".log", ".md", ".csv", ".json", ".xml", ".ini", ".cfg", ".conf", ".yaml", ".yml", ".sh", ".py"}
 
 
+MARKUP_EXTS = {".html", ".htm", ".xml", ".svg", ".xhtml"}
+
+
+def _meaningful_chars(path: Path, mime: str) -> int | None:
+    """Hoeveel echte tekst (letters/cijfers) zit er in een tekstbestand? Tags,
+    witruimte en leestekens tellen niet mee. None = geen tekstbestand."""
+    ext = path.suffix.lower()
+    if not (mime.startswith("text/") or ext in TEXT_EXTS or ext in MARKUP_EXTS):
+        return None
+    try:
+        with path.open("rb") as fh:
+            raw = fh.read(65536)
+    except OSError:
+        return None
+    txt = raw.decode("utf-8", errors="replace")
+    if ext in MARKUP_EXTS or "html" in mime or "xml" in mime:
+        txt = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", txt)
+        txt = re.sub(r"(?s)<!--.*?-->", " ", txt)
+        txt = re.sub(r"(?s)<[^>]*>", " ", txt)
+        txt = re.sub(r"&[a-zA-Z#0-9]+;", " ", txt)
+    return len(re.findall(r"\w", txt))
+
+
 def _snippet(path: Path, mime: str) -> str:
     if not (mime.startswith("text/") or path.suffix.lower() in TEXT_EXTS):
         return ""
@@ -140,6 +164,7 @@ def scan_desktop(cfg: Config, folder: Path | None = None) -> list[FileInfo]:
             mime=mime,
         )
         info.snippet = "" if is_dir else _snippet(p, mime)
+        info.meaningful_chars = None if is_dir else _meaningful_chars(p, mime)
         info.protected_reason = protection(info, cfg)
         score_file(info)
         items.append(info)
@@ -273,6 +298,15 @@ def score_file(info: FileInfo) -> None:
         if info.size < 4096:
             score = _or(score, 0.4)
             hints.append("vrijwel geen inhoud")
+    if info.size > 0 and info.meaningful_chars is not None:
+        if info.meaningful_chars < 3:
+            score = _or(score, 0.6)
+            hints.append("geen tekst, alleen opmaak/witruimte")
+        elif info.meaningful_chars < 40:
+            words = re.findall(r"[^\W\d_]{4,}", re.sub(r"<[^>]*>", " ", info.snippet))
+            if words and all(looks_like_gibberish(w) for w in words):
+                score = _or(score, 0.6)
+                hints.append("inhoud is willekeurig getypt")
     if info.size == 0:
         score = _or(score, 0.85)
         hints.append("leeg bestand (0 bytes)")
@@ -292,6 +326,9 @@ def score_file(info: FileInfo) -> None:
 
     info.score = round(score, 2)
     info.hints = list(dict.fromkeys(hints))
+
+
+STRONG_JUNK = 0.75
 
 
 def heuristic_verdict(info: FileInfo, threshold: float = 0.6) -> Verdict:
@@ -451,6 +488,10 @@ def classify(cfg: Config, items: list[FileInfo], progress=None) -> tuple[list[Ve
                     # veel inhoud, wordt extra gecontroleerd.
                     if trash and info.score == 0 and info.size > 5 * 1024 * 1024:
                         trash, reason = False, "groot bestand zonder afvalsignalen"
+                    # Een klein model twijfelt soms bij overduidelijk afval
+                    # (leeg, onzinnaam, .part...). Sterke signalen winnen.
+                    if not trash and info.score >= STRONG_JUNK:
+                        trash, reason = True, ", ".join(info.hints) + " (sterke afvalsignalen)"
                     verdicts.append(Verdict(info, trash, reason or "afval volgens AI", "ai"))
                 else:
                     verdicts.append(heuristic_verdict(info))

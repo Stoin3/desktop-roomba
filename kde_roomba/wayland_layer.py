@@ -39,6 +39,7 @@ _SYMS = {
     "setActivateOnShow": "_ZN12LayerShellQt6Window17setActivateOnShowEb",
 }
 # Optioneel (versie-afhankelijk): op het actieve scherm plaatsen.
+_SET_SCREEN = "_ZN12LayerShellQt6Window9setScreenEP7QScreen"                       # >= 6.6
 _ACTIVE_SCREEN = "_ZN12LayerShellQt6Window26setWantsToBeOnActiveScreenEb"           # >= 6.6
 _SCREEN_CONFIG = "_ZN12LayerShellQt6Window22setScreenConfigurationENS0_19ScreenConfigurationE"  # oudere
 
@@ -67,7 +68,29 @@ def _load_lib():
     return None
 
 
-def enable(widget, layer: int = LAYER_BOTTOM) -> tuple[bool, str]:
+def kde_primary_output() -> str | None:
+    """Naam van KDE's hoofdscherm (prioriteit 1 in Systeeminstellingen →
+    Beeldscherm). Daar staat Plasma's 'scherm 0' met de bureaublad-iconen."""
+    import json
+    import shutil
+    import subprocess
+
+    if not shutil.which("kscreen-doctor"):
+        return None
+    try:
+        out = subprocess.run(["kscreen-doctor", "-j"], capture_output=True, text=True, timeout=4).stdout
+        outputs = json.loads(out).get("outputs", [])
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    enabled = [o for o in outputs if o.get("enabled", True) and o.get("connected", True)]
+    with_prio = [o for o in enabled if isinstance(o.get("priority"), int) and o["priority"] > 0]
+    if with_prio:
+        return min(with_prio, key=lambda o: o["priority"]).get("name")
+    prim = [o for o in enabled if o.get("primary")]
+    return prim[0].get("name") if prim else None
+
+
+def enable(widget, layer: int = LAYER_BOTTOM, screen=None) -> tuple[bool, str]:
     """Moet aangeroepen worden vóórdat het venster getoond wordt.
     Geeft (gelukt, uitleg) terug."""
     from PyQt6 import sip
@@ -93,6 +116,8 @@ def enable(widget, layer: int = LAYER_BOTTOM) -> tuple[bool, str]:
     fns["setActivateOnShow"].argtypes = [ctypes.c_void_p, ctypes.c_bool]
     fns["setActivateOnShow"].restype = None
 
+    if screen is not None:
+        widget.setScreen(screen)
     widget.winId()  # maakt het QWindow aan (nog niet zichtbaar)
     handle = widget.windowHandle()
     if handle is None:
@@ -106,10 +131,17 @@ def enable(widget, layer: int = LAYER_BOTTOM) -> tuple[bool, str]:
     fns["setKeyboardInteractivity"](win, KEYBOARD_ON_DEMAND)
     fns["setActivateOnShow"](win, False)
 
-    # Laat de compositor het scherm kiezen (het actieve scherm), in plaats
-    # van Qt's 'eerste' scherm – dat kan een uitgeschakelde/tweede monitor zijn.
+    # Scherm: bij voorkeur het opgegeven scherm (KDE's hoofdscherm). Anders
+    # laat de compositor kiezen (het actieve scherm) i.p.v. Qt's 'eerste'.
     where = "scherm van Qt"
-    if hasattr(lib, _ACTIVE_SCREEN):
+    if screen is not None and hasattr(lib, _SET_SCREEN):
+        f = getattr(lib, _SET_SCREEN)
+        f.argtypes, f.restype = [ctypes.c_void_p, ctypes.c_void_p], None
+        f(win, sip.unwrapinstance(screen))
+        where = f"scherm {screen.name()}"
+    elif screen is not None and not hasattr(lib, _ACTIVE_SCREEN):
+        where = f"scherm {screen.name()} (via Qt)"  # oude versie: volgt QWindow::screen()
+    elif hasattr(lib, _ACTIVE_SCREEN):
         f = getattr(lib, _ACTIVE_SCREEN)
         f.argtypes, f.restype = [ctypes.c_void_p, ctypes.c_bool], None
         f(win, True)

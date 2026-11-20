@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Callable
 
 from PyQt6.QtCore import QMimeDatabase, QPointF, QRect, QRectF, Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRegion
+from PyQt6.QtGui import QColor, QFontMetrics, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from PyQt6.QtWidgets import QApplication, QFileIconProvider, QMenu, QWidget
 from PyQt6.QtCore import QFileInfo, QFile, QLockFile
 
@@ -308,7 +308,8 @@ class RoombaWindow(QWidget):
         # Wayland: via layer-shell-qt in de 'bottom'-laag (boven het
         # bureaublad, onder vensters). De compositor bepaalt dan de grootte
         # (het vrije bureaubladgebied) → zie resizeEvent.
-        self.layer_shell, how = wayland_layer.enable(self) if self.wayland else (False, "X11")
+        self.layer_shell, how = (wayland_layer.enable(self, screen=self.target_screen())
+                                 if self.wayland else (False, "X11"))
         log.info("Vensterlaag: %s (%s)", "layer-shell" if self.layer_shell else "gewoon venster", how)
         if not self.layer_shell:
             self.setGeometry(geom)
@@ -328,6 +329,7 @@ class RoombaWindow(QWidget):
         self.press_pos: QPointF | None = None
         self.dragging = False
         self.worker: BrainWorker | None = None
+        self._threads: set[BrainWorker] = set()
         self.cleaned: list[brain.Verdict] = []
         self.failed: list[str] = []
         self.sparks_at = 0.0
@@ -342,6 +344,13 @@ class RoombaWindow(QWidget):
         self.say(f"Hoi! Dubbelklik op mij\nom je bureaublad op te ruimen.", 5)
 
     # ------------------------------------------------------------ helpers
+    def target_screen(self):
+        """Het scherm met je bureaublad-iconen: config 'screen', anders KDE's hoofdscherm."""
+        screens = {sc.name(): sc for sc in QGuiApplication.screens()}
+        want = self.cfg.screen or wayland_layer.kde_primary_output()
+        log.info("Gewenst scherm: %s", want or "(onbekend – compositor kiest)")
+        return screens.get(want) if want else None
+
     def now(self) -> float:
         return time.monotonic() - self.t0
 
@@ -372,7 +381,14 @@ class RoombaWindow(QWidget):
         return self.state not in ("charging", "idle", "error")
 
     def layout(self) -> DesktopLayout:
-        return DesktopLayout(self.cfg, 0, 0, self.geom.width(), self.geom.height())
+        # Kirigami.Units.gridUnit = hoogte van het standaardlettertype (even getal)
+        gu = QFontMetrics(QApplication.font()).height()
+        gu += gu % 2
+        h = self.windowHandle()
+        sc = h.screen() if h and h.screen() else QGuiApplication.primaryScreen()
+        sg = sc.geometry() if sc else self.geom
+        return DesktopLayout(self.cfg, 0, 0, self.geom.width(), self.geom.height(),
+                             grid_unit=gu, screen_w=sg.width(), screen_h=sg.height())
 
     def icon_position(self, name: str) -> QPointF | None:
         # Kort cachen: tijdens het rijden wordt dit elk frame gevraagd.
@@ -415,19 +431,36 @@ class RoombaWindow(QWidget):
         self.cleaned, self.failed = [], []
         self.robot.bin_fill = 0.0
         self.worker = BrainWorker(self.cfg, self.desktop)
+        self._threads.add(self.worker)  # referentie houden tot de thread echt klaar is
         self.worker.progress.connect(lambda s: self.say(s, 600))
         self.worker.finished_ok.connect(self.on_brain_done)
         self.worker.failed.connect(self.on_brain_failed)
+        # Pas loslaten als de thread écht klaar is (anders: "QThread: Destroyed
+        # while thread is still running" → crash).
+        self.worker.finished.connect(self._worker_finished)
         self.worker.start()
 
+    def _worker_finished(self) -> None:
+        w = self.sender()
+        if w is self.worker:
+            self.worker = None
+        if w in self._threads:
+            self._threads.discard(w)
+            w.deleteLater()
+
+    def stop_worker(self) -> None:
+        """Bij afsluiten: lopende AI-vragen netjes laten aflopen."""
+        for w in list(self._threads):
+            if w.isRunning() and not w.wait(3000):
+                w.terminate()
+                w.wait(2000)
+
     def on_brain_failed(self, msg: str) -> None:
-        self.worker = None
         self.state = "error"
         self.say(f"Er ging iets mis 😵\n{msg[:80]}", 6)
         self.queue = [Wait(4), Call(self._back_to_charging)]
 
     def on_brain_done(self, targets: list, method: str, seen: int, skipped: str = "") -> None:
-        self.worker = None
         if not targets:
             self.state = "happy"
             extra = f"\nOvergeslagen: {skipped}" if skipped else ""
@@ -453,6 +486,12 @@ class RoombaWindow(QWidget):
             remaining.remove(nxt)
             order.append(nxt)
             cur = start_positions.get(nxt.info.name) or cur
+
+        lay = self.layout()
+        log.info("Bureaubladraster: %s", lay.describe())
+        for v in order:
+            p = start_positions.get(v.info.name)
+            log.info("  doel %s op (%d, %d)", v.info.name, p.x() if p else -1, p.y() if p else -1)
 
         q: list[Action] = [Wait(0.6), Reverse(self.R * 1.5), Call(lambda: self._set_state("working"))]
         for v in order:
@@ -980,6 +1019,7 @@ def _main(logfile: Path) -> int:
             w.setGeometry(g)
 
     screen.availableGeometryChanged.connect(on_geom)
+    app.aboutToQuit.connect(w.stop_worker)
     rc = app.exec()
     lock.unlock()
     return rc

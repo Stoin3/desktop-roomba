@@ -83,8 +83,9 @@ Ander model? Pas `model` aan in de config, bijv. `qwen2.5:0.5b` (lichter) of
 | `protected_extensions` | … | Nooit weggooien |
 | `allow_folders` | `false` | Ook (lege) mappen mogen weg |
 | `dry_run` | `false` | Proefrun |
+| `screen` | `""` | Scherm, bijv. `"HDMI-A-1"`; leeg = KDE's hoofdscherm (waar je bureaublad-iconen staan) |
 | `roomba_size`, `speed_px_s` | `96`, `260` | Grootte en snelheid |
-| `icon_cell_width/height`, `icon_flow` | auto | Zie hieronder |
+| `icon_cell_width/height`, `icon_offset_x/y`, `icon_flow` | auto | Zie hieronder |
 
 Herstart de roomba na het wijzigen (rechtsklik → Afsluiten, dan `kde-roomba`).
 
@@ -98,11 +99,12 @@ Herstart de roomba na het wijzigen (rechtsklik → Afsluiten, dan `kde-roomba`).
   standaard-vensterhints.
 - Versie 1.0.0 schreef een KWin-vensterregel; die wordt bij het starten automatisch weer verwijderd.
 - **Iconposities:** de roomba leest de posities uit
-  `~/.config/plasma-org.kde.plasma.desktop-appletsrc`; voor automatisch geplaatste iconen
-  bootst hij Plasma's raster na (mappen eerst, dan alfabetisch, kolom voor kolom). Dat is een
-  benadering. Komt hij net naast je iconen uit, stel dan `icon_cell_width` / `icon_cell_height`
-  (in pixels) of `icon_flow` (`"columns"` of `"rows"`) bij.
-- Alleen het **primaire scherm** wordt gebruikt.
+  `~/.config/plasma-org.kde.plasma.desktop-appletsrc` en rekent ze om met dezelfde formules als
+  Plasma (celmaat uit icoongrootte, lettergrootte en schermruimte; rijen of kolommen; links of
+  rechts uitgelijnd). Het log toont per ronde het berekende raster en elk doel. Zit hij er toch
+  structureel naast, stel dan `icon_offset_x` / `icon_offset_y` of `icon_cell_width` /
+  `icon_cell_height` (pixels) bij.
+- Bij meerdere schermen staat de roomba op **KDE's hoofdscherm** (Systeeminstellingen → Beeldscherm, prioriteit 1); daar staan je bureaublad-iconen. Ander scherm? Zet `screen` in de config.
 - Bestanden gaan via `QFile.moveToTrash` (freedesktop-prullenbak), met `gio trash` als terugval.
 
 ## Problemen oplossen

@@ -47,6 +47,8 @@ class Config:
     dry_run: bool = False
 
     # --- Uiterlijk / positie --------------------------------------------
+    # Op welk scherm (bijv. "HDMI-A-1"). Leeg = KDE's hoofdscherm.
+    screen: str = ""
     roomba_size: int = 96
     speed_px_s: float = 260.0
     turn_deg_s: float = 260.0
@@ -58,9 +60,10 @@ class Config:
     # --- Bureaublad-iconen (benadering van het Plasma-raster) ----------
     icon_cell_width: int = 0   # 0 = automatisch op basis van iconSize
     icon_cell_height: int = 0
-    icon_margin_x: int = 8
-    icon_margin_y: int = 8
-    # "auto", "columns" (boven→onder) of "rows" (links→rechts)
+    # Extra verschuiving (pixels) als de roomba er structureel naast zit.
+    icon_offset_x: int = 0
+    icon_offset_y: int = 0
+    # "auto" (= Plasma-instelling), "columns" (boven→onder) of "rows" (links→rechts)
     icon_flow: str = "auto"
 
     @classmethod
