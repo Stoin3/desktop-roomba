@@ -145,6 +145,18 @@ bureaubladmelding. Let op de regel `Vensterlaag:`; daar hoort `layer-shell` te s
 Staat er `PyQt6 komt uit pip`, verwijder dan de pip-versie
 (`pip uninstall PyQt6 PyQt6-Qt6 PyQt6-sip`) zodat de Fedora-versie (`python3-pyqt6`) wordt gebruikt.
 
+### Titelbalken weg bij alle vensters?
+
+Versie 1.0.0 maakte een KWin-vensterregel aan (o.a. "geen titelbalk"). Een restant daarvan kan
+voor alle vensters gaan gelden. Nieuwere versies ruimen dat bij het starten op; handmatig:
+
+```bash
+cd ~/.local/share/kde-roomba && python3 -m kde_roomba.kwin
+```
+
+Dit toont welke regels titelbalken weghalen en verwijdert alleen die van KDE Roomba. Daarna krijgen
+nieuwe vensters weer een titelbalk (bestaande na opnieuw openen).
+
 ## Verwijderen
 
 ```bash
