@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import math
 
+from . import outfits
+
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import (
     QBrush,
@@ -90,19 +92,22 @@ def led_color(state: str, t: float) -> tuple[QColor, float]:
 
 
 def draw_roomba(p: QPainter, r: float, state: str, t: float, brush_angle: float, brush_speed: float,
-                bin_fill: float = 0.0) -> None:
+                bin_fill: float = 0.0, outfit: "outfits.Outfit | None" = None) -> None:
+    o = outfit or outfits.get(outfits.DEFAULT)
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    outfits.draw_under(p, r, o, t, brush_speed)
 
     draw_side_brush(p, r, brush_angle, brush_speed)
 
     # --- behuizing -----------------------------------------------------
     body = QRadialGradient(QPointF(-r * 0.25, -r * 0.3), r * 1.35)
-    body.setColorAt(0.0, _c("#4a4e55"))
-    body.setColorAt(0.55, _c("#2a2c31"))
-    body.setColorAt(1.0, _c("#141518"))
-    p.setPen(QPen(_c("#0b0b0d"), 1.5))
+    body.setColorAt(0.0, _c(o.body[0]))
+    body.setColorAt(0.55, _c(o.body[1]))
+    body.setColorAt(1.0, _c(o.body[2]))
+    p.setPen(QPen(_c(o.edge), 1.5))
     p.setBrush(QBrush(body))
     p.drawEllipse(QPointF(0, 0), r, r)
+    outfits.draw_pattern(p, r, o)
 
     # --- bumper (voorste helft) -------------------------------------------
     bumper = QPainterPath()
@@ -114,23 +119,23 @@ def draw_roomba(p: QPainter, r: float, state: str, t: float, brush_angle: float,
     bumper.arcTo(inner, -95, 190)
     bumper.closeSubpath()
     bg = QLinearGradient(QPointF(r, 0), QPointF(0, 0))
-    bg.setColorAt(0.0, _c("#1d1e22"))
-    bg.setColorAt(1.0, _c("#33363c"))
+    bg.setColorAt(0.0, _c(o.bumper[0]))
+    bg.setColorAt(1.0, _c(o.bumper[1]))
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(QBrush(bg))
     p.drawPath(bumper)
     # naad van de bumper
-    p.setPen(QPen(_c("#08080a", 220), 1.2))
+    p.setPen(QPen(_c(o.edge, 220), 1.2))
     p.setBrush(Qt.BrushStyle.NoBrush)
     p.drawArc(inner, -95 * 16, 190 * 16)
 
     # --- stofbak (achterkant) ---------------------------------------------
     bin_rect = QRectF(-r * 0.93, -r * 0.93, r * 1.86, r * 1.86)
-    p.setPen(QPen(_c("#5c6068", 150), 1.0))
+    p.setPen(QPen(_c(o.bin_lines, 150), 1.0))
     p.drawArc(bin_rect, 140 * 16, 80 * 16)
     p.drawArc(QRectF(-r * 0.78, -r * 0.78, r * 1.56, r * 1.56), 140 * 16, 80 * 16)
     # ribbeltjes / handgreep
-    p.setPen(QPen(_c("#0d0e10", 200), 1.6))
+    p.setPen(QPen(_c(o.edge, 200), 1.6))
     for i in range(5):
         a = math.radians(160 + i * 10)
         p.drawLine(QPointF(math.cos(a) * r * 0.8, math.sin(a) * r * 0.8),
@@ -146,10 +151,10 @@ def draw_roomba(p: QPainter, r: float, state: str, t: float, brush_angle: float,
     # --- glanzende bovenplaat -------------------------------------------
     plate_r = r * 0.68
     pg = QRadialGradient(QPointF(-r * 0.2, -r * 0.25), plate_r * 1.4)
-    pg.setColorAt(0.0, _c("#5b6068"))
-    pg.setColorAt(0.6, _c("#2f3238"))
-    pg.setColorAt(1.0, _c("#202226"))
-    p.setPen(QPen(_c("#0e0f11"), 1.2))
+    pg.setColorAt(0.0, _c(o.plate[0]))
+    pg.setColorAt(0.6, _c(o.plate[1]))
+    pg.setColorAt(1.0, _c(o.plate[2]))
+    p.setPen(QPen(_c(o.edge), 1.2))
     p.setBrush(QBrush(pg))
     p.drawEllipse(QPointF(0, 0), plate_r, plate_r)
 
@@ -163,13 +168,14 @@ def draw_roomba(p: QPainter, r: float, state: str, t: float, brush_angle: float,
     p.setBrush(QBrush(hg))
     p.drawPath(hl.intersected(_circle(plate_r)))
 
-    # --- camera / sensorvenster voor --------------------------------------
-    p.setBrush(_c("#07080a"))
-    p.setPen(QPen(_c("#4b4f57"), 0.8))
-    p.drawRoundedRect(QRectF(r * 0.72, -r * 0.13, r * 0.11, r * 0.26), 3, 3)
-    p.setBrush(_c("#3a6ea8", 160))
-    p.setPen(Qt.PenStyle.NoPen)
-    p.drawEllipse(QPointF(r * 0.775, -r * 0.05), r * 0.02, r * 0.02)
+    # --- camera / sensorvenster voor (niet bij outfits met een gezichtje)
+    if not any(e in o.extras for e in ("eyes", "panda_eyes", "frog_eyes", "whiskers")):
+        p.setBrush(_c("#07080a"))
+        p.setPen(QPen(_c("#4b4f57"), 0.8))
+        p.drawRoundedRect(QRectF(r * 0.72, -r * 0.13, r * 0.11, r * 0.26), 3, 3)
+        p.setBrush(_c("#3a6ea8", 160))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(r * 0.775, -r * 0.05), r * 0.02, r * 0.02)
 
     # --- statusring + knop ------------------------------------------------
     col, inten = led_color(state, t)
@@ -195,8 +201,8 @@ def draw_roomba(p: QPainter, r: float, state: str, t: float, brush_angle: float,
     p.drawEllipse(QPointF(0, 0), ring_r, ring_r)
 
     btn = QRadialGradient(QPointF(-ring_r * 0.3, -ring_r * 0.3), ring_r)
-    btn.setColorAt(0.0, _c("#6a6f78"))
-    btn.setColorAt(1.0, _c("#2a2d33"))
+    btn.setColorAt(0.0, _c(o.button[0]))
+    btn.setColorAt(1.0, _c(o.button[1]))
     p.setPen(QPen(_c("#111214"), 1))
     p.setBrush(QBrush(btn))
     p.drawEllipse(QPointF(0, 0), ring_r * 0.78, ring_r * 0.78)
@@ -211,9 +217,11 @@ def draw_roomba(p: QPainter, r: float, state: str, t: float, brush_angle: float,
     f.setBold(True)
     f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.6)
     p.setFont(f)
-    p.setPen(_c("#d7dae0", 200))
+    p.setPen(_c(o.text, 220))
     p.drawText(QRectF(-ring_r, -ring_r, 2 * ring_r, 2 * ring_r), Qt.AlignmentFlag.AlignCenter, "CLEAN")
     p.restore()
+
+    outfits.draw_face(p, r, o, t, state)
 
 
 def _circle(rad: float) -> QPainterPath:

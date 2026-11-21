@@ -49,6 +49,8 @@ class Config:
     # --- Uiterlijk / positie --------------------------------------------
     # Op welk scherm (bijv. "HDMI-A-1"). Leeg = KDE's hoofdscherm.
     screen: str = ""
+    # Uiterlijk: zie rechtsklik → Outfit (klassiek, wit, kat, panda, ...)
+    outfit: str = "klassiek"
     roomba_size: int = 96
     speed_px_s: float = 260.0
     turn_deg_s: float = 260.0

@@ -22,11 +22,11 @@ from pathlib import Path
 from typing import Callable
 
 from PyQt6.QtCore import QMimeDatabase, QPointF, QRect, QRectF, Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QDrag, QFontMetrics, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRegion
+from PyQt6.QtGui import QActionGroup, QColor, QDrag, QIcon as _QIcon, QFontMetrics, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from PyQt6.QtWidgets import QApplication, QFileDialog, QFileIconProvider, QMenu, QStyle, QWidget
 from PyQt6.QtCore import QFileInfo, QFile, QLockFile
 
-from . import APP_ID, __version__, art, brain, kwin, wayland_layer
+from . import APP_ID, __version__, art, brain, instance, kwin, outfits, wayland_layer
 
 try:
     from . import folder_drop, kwin_windows
@@ -348,6 +348,11 @@ class RoombaWindow(QWidget):
         self.timer.timeout.connect(self.tick)
         self.timer.start(16)
 
+        # waakhond: blijft hij zichtbaar op het juiste scherm?
+        self.dog = QTimer(self)
+        self.dog.timeout.connect(self.watchdog)
+        self.dog.start(2500)
+
         self.robot_hidden = False      # tijdens het slepen 'zweeft' hij bij de muis
         self.remote_folder: Path | None = None  # map waarin hij op afstand stofzuigt
         if folder_drop is not None:
@@ -367,10 +372,91 @@ class RoombaWindow(QWidget):
     # ------------------------------------------------------------ helpers
     def target_screen(self):
         """Het scherm met je bureaublad-iconen: config 'screen', anders KDE's hoofdscherm."""
-        screens = {sc.name(): sc for sc in QGuiApplication.screens()}
-        want = self.cfg.screen or wayland_layer.kde_primary_output()
-        log.info("Gewenst scherm: %s", want or "(onbekend – compositor kiest)")
+        screens = {sc.name(): sc for sc in QGuiApplication.screens() if sc.name()}
+        now = time.monotonic()
+        cache = getattr(self, "_primary_cache", None)
+        if self.cfg.screen:
+            want = self.cfg.screen
+        elif cache and now - cache[0] < 15:
+            want = cache[1]
+        else:
+            want = wayland_layer.kde_primary_output()
+            self._primary_cache = (now, want)
+        if want != getattr(self, "_last_want", "-"):
+            self._last_want = want
+            log.info("Gewenst scherm: %s (beschikbaar: %s)", want or "(onbekend – compositor kiest)",
+                     ", ".join(screens) or "geen")
         return screens.get(want) if want else None
+
+    # ------------------------------------------------------------ zichtbaar blijven
+    def screens_changed(self, *_a) -> None:
+        """Schermen erbij/eraf (bijv. vlak na het inloggen): opnieuw plaatsen
+        zodra het rustig is."""
+        self._primary_cache = None
+        log.info("Schermen gewijzigd: %s", ", ".join(sc.name() for sc in QGuiApplication.screens()) or "geen")
+        # even wachten tot alle schermen er zijn, dan één keer opnieuw plaatsen
+        if not hasattr(self, "_settle"):
+            self._settle = QTimer(self)
+            self._settle.setSingleShot(True)
+            self._settle.timeout.connect(lambda: self.ensure_visible(force=True, reason="schermen gewijzigd"))
+        self._settle.start(1500)
+
+    def watchdog(self) -> None:
+        if self.busy() or self.dragging or self.robot_hidden:
+            return
+        self.ensure_visible()
+
+    def ensure_visible(self, force: bool = False, reason: str = "") -> None:
+        """Zorgt dat de roomba zichtbaar is op het juiste scherm; zo niet, dan
+        wordt het venster op dat scherm opnieuw aangemaakt."""
+        if self.busy() and not force:
+            return
+        real = [sc for sc in QGuiApplication.screens() if not sc.geometry().isEmpty()]
+        if not real:
+            return  # nog geen schermen: wachten op screenAdded
+        h = self.windowHandle()
+        want = self.target_screen()
+        cur = h.screen() if h else None
+        exposed = bool(h and h.isExposed())
+        self._unexposed = 0 if exposed else getattr(self, "_unexposed", 0) + 1
+        problem = None
+        if not self.isVisible():
+            problem = "niet zichtbaar"
+        elif self._unexposed >= 2:
+            problem = "niet op het scherm"
+        elif want is not None and cur is not want:
+            problem = f"verkeerd scherm ({cur.name() if cur else '?'} i.p.v. {want.name()})"
+        elif cur is not None and cur not in real:
+            problem = "scherm verdwenen"
+        if not problem and not force:
+            return
+        now = time.monotonic()
+        if now - getattr(self, "_last_fix", 0) < 2.5:
+            return
+        self._last_fix = now
+        log.info("Opnieuw plaatsen: %s", problem or reason or "op verzoek")
+        if self.busy():
+            self.queue = []
+            self._back_to_charging()
+            self.remote_folder = None
+        self.robot_hidden = False
+        self.hide()
+        if self.layer_shell:
+            where = wayland_layer.move_to_screen(want)
+            if want is not None:
+                self.setScreen(want)
+            log.info("  → %s", where)
+        else:
+            sc = want or QGuiApplication.primaryScreen()
+            if sc is not None:
+                self.setScreen(sc)
+                self.geom = sc.availableGeometry()
+                self.setGeometry(self.geom)
+        self._unexposed = 0
+        self.show()
+        if not self.cfg.hub_x:
+            self.hub = self._initial_hub()
+        self.robot.x, self.robot.y, self.robot.heading = self.hub.x(), self.hub.y(), 0.0
 
     def now(self) -> float:
         return time.monotonic() - self.t0
@@ -722,7 +808,8 @@ class RoombaWindow(QWidget):
         p.translate(c, c)
         art.draw_shadow(p, R * 0.95)
         p.rotate(-90)
-        art.draw_roomba(p, R, "working", self.now(), self.robot.brush_angle, 1.0, self.robot.bin_fill)
+        art.draw_roomba(p, R, "working", self.now(), self.robot.brush_angle, 1.0, self.robot.bin_fill,
+                        outfits.get(self.cfg.outfit))
         p.end()
         return pm
 
@@ -1013,7 +1100,7 @@ class RoombaWindow(QWidget):
         art.draw_shadow(p, R)
         p.rotate(math.degrees(r.heading))
         state = self.state if not (self.state == "charging" and not docked) else "idle"
-        art.draw_roomba(p, R, state, t, r.brush_angle, r.brush_speed, r.bin_fill)
+        art.draw_roomba(p, R, state, t, r.brush_angle, r.brush_speed, r.bin_fill, outfits.get(self.cfg.outfit))
         p.restore()
 
         # toren over de roomba heen
@@ -1099,6 +1186,28 @@ class RoombaWindow(QWidget):
     def leaveEvent(self, _ev) -> None:
         self.hover = False
 
+    def outfit_icon(self, o) -> "_QIcon":
+        size = 40
+        dpr = self.devicePixelRatioF()
+        pm = QPixmap(int(size * dpr), int(size * dpr))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.translate(size / 2, size / 2)
+        p.rotate(-90)
+        art.draw_roomba(p, size * 0.36, "idle", 1.0, 30, 0.0, 0.0, o)
+        p.end()
+        return _QIcon(pm)
+
+    def set_outfit(self, o) -> None:
+        self.cfg.outfit = o.key
+        self.cfg.save()
+        log.info("Outfit: %s", o.key)
+        self.say(f"Nieuw outfit: {o.name} ✨", 3)
+        if not self.busy():
+            self.queue = [Spin(1, 1.2)]
+
     def show_menu(self, global_pos) -> None:
         m = QMenu(self)
         a_clean = m.addAction("🧹  Bureaublad opruimen")
@@ -1112,14 +1221,33 @@ class RoombaWindow(QWidget):
         a_ai.setCheckable(True)
         a_ai.setChecked(self.cfg.use_ai)
         m.addSeparator()
+        m_outfit = m.addMenu("👗  Outfit")
+        group = QActionGroup(m_outfit)
+        outfit_actions = {}
+        for grp, title in (("normaal", "Normaal"), ("cute", "Cute")):
+            m_outfit.addSection(title)
+            for o in outfits.OUTFITS.values():
+                if o.group != grp:
+                    continue
+                act = m_outfit.addAction(self.outfit_icon(o), o.name)
+                act.setCheckable(True)
+                act.setChecked(o.key == self.cfg.outfit)
+                group.addAction(act)
+                outfit_actions[act] = o
+        m.addSeparator()
         a_hist = m.addAction("Geschiedenis bekijken")
         a_trash = m.addAction("Prullenbak openen")
         a_cfg = m.addAction("Instellingen (config.json)")
         a_home = m.addAction("Laadstation terugzetten naar rechtsonder")
         m.addSeparator()
+        a_restart = m.addAction("Herstarten")
         a_quit = m.addAction("Afsluiten")
         chosen = m.exec(global_pos)
-        if chosen is a_clean:
+        if chosen in outfit_actions:
+            self.set_outfit(outfit_actions[chosen])
+        elif chosen is a_restart:
+            restart_self()
+        elif chosen is a_clean:
             self.start_cleaning()
         elif chosen is a_folder:
             self.choose_folder()
@@ -1183,39 +1311,117 @@ def notify(title: str, body: str) -> None:
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def setup_logging() -> Path:
+def setup_logging(to_file: bool) -> Path:
     d = state_dir()
     d.mkdir(parents=True, exist_ok=True)
     logfile = d / "roomba.log"
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        handlers=[logging.FileHandler(logfile, mode="w", encoding="utf-8"), logging.StreamHandler()],
-    )
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root.handlers):
+        sh = logging.StreamHandler()
+        sh.setFormatter(fmt)
+        root.addHandler(sh)
+    if to_file:
+        fh = logging.FileHandler(logfile, mode="w", encoding="utf-8")
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
     return logfile
+
+
+def restart_self() -> None:
+    """Nieuw exemplaar starten dat het overneemt, en dit exemplaar afsluiten."""
+    from PyQt6.QtCore import QProcess
+
+    workdir = str(Path(__file__).resolve().parent.parent)
+    ok = QProcess.startDetached(sys.executable, ["-m", "kde_roomba", "--restart"], workdir)
+    log.info("Herstarten (nieuw proces gestart: %s)", ok)
+    QApplication.quit()
+
+
+def parse_args(argv: list[str]):
+    import argparse
+
+    ap = argparse.ArgumentParser(prog="kde-roomba", description="KDE Roomba – bureaublad-stofzuiger")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--quit", action="store_true", help="draaiende roomba afsluiten")
+    g.add_argument("--restart", action="store_true", help="roomba (opnieuw) starten, ook als hij al draait")
+    g.add_argument("--show", action="store_true", help="draaiende roomba weer zichtbaar maken (standaard)")
+    return ap.parse_known_args(argv[1:])[0]
 
 
 def main() -> int:
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         print("KDE Roomba hoort bij jouw bureaublad: start hem ZONDER sudo, gewoon:  kde-roomba", file=sys.stderr)
         return 1
-    logfile = setup_logging()
+    args = parse_args(sys.argv)
+    setup_logging(to_file=False)
+    logfile = state_dir() / "roomba.log"
     try:
-        return _main(logfile)
+        return _main(args, logfile)
     except Exception:  # noqa: BLE001
         log.error("Opstarten mislukt:\n%s", traceback.format_exc())
         notify("KDE Roomba kon niet starten", f"Zie {logfile}")
         return 1
 
 
-def _main(logfile: Path) -> int:
+def _take_lock(args, lock: "instance.Lock") -> int | None:
+    """Regelt 'er draait er al een'. None = wij mogen starten; anders exitcode."""
+    if args.quit:
+        if lock.try_lock():
+            lock.unlock()
+            print("Er draait geen KDE Roomba.")
+            return 0
+        if instance.send("quit") and lock.try_lock(5000):
+            lock.unlock()
+            print("KDE Roomba is afgesloten.")
+            return 0
+        lock.kill_holder()
+        print("KDE Roomba reageerde niet en is gestopt.")
+        return 0
+
+    if lock.try_lock():
+        return None
+    if args.restart:
+        instance.send("quit")
+        if lock.try_lock(6000):
+            return None
+    else:
+        if instance.send("show"):
+            print("KDE Roomba draait al – ik heb hem weer zichtbaar gemaakt.\n"
+                  "Afsluiten: kde-roomba --quit   •   Herstarten: kde-roomba --restart")
+            notify("KDE Roomba draait al", "Ik heb hem weer zichtbaar gemaakt. 👋")
+            return 0
+    # het draaiende exemplaar reageert niet: overnemen
+    log.warning("Draaiende roomba reageert niet; ik neem het over.")
+    lock.kill_holder()
+    if lock.try_lock(2000):
+        return None
+    print("Kon de oude KDE Roomba niet stoppen. Probeer: pkill -f kde_roomba", file=sys.stderr)
+    return 1
+
+
+def _main(args, logfile: Path) -> int:
     QGuiApplication.setDesktopFileName(APP_ID)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_ID)
     app.setApplicationDisplayName("KDE Roomba")
     app.setApplicationVersion(__version__)
-    app.setQuitOnLastWindowClosed(True)
+    # Niet stoppen als het venster even weg is (scherm verdwenen): de
+    # waakhond zet het terug. Afsluiten gaat alleen via het menu / --quit.
+    app.setQuitOnLastWindowClosed(False)
     signal.signal(signal.SIGINT, lambda *_: app.quit())
+    signal.signal(signal.SIGTERM, lambda *_: app.quit())
+    # Python verwerkt signalen alleen als er Python-code draait: kleine hartslag.
+    heartbeat = QTimer()
+    heartbeat.timeout.connect(lambda: None)
+    heartbeat.start(500)
+
+    lock = instance.Lock()
+    rc = _take_lock(args, lock)
+    if rc is not None:
+        return rc
+    setup_logging(to_file=True)
     log.info("KDE Roomba %s, Qt %s, platform %s, sessie %s/%s", __version__,
              __import__("PyQt6.QtCore", fromlist=["QT_VERSION_STR"]).QT_VERSION_STR,
              app.platformName(), os.environ.get("XDG_SESSION_TYPE", "?"),
@@ -1232,13 +1438,6 @@ def _main(logfile: Path) -> int:
 
     sys.excepthook = excepthook
 
-    # Maar één roomba tegelijk.
-    lock = QLockFile(str(state_dir() / "roomba.lock"))
-    lock.setStaleLockTime(0)
-    if not lock.tryLock(200):
-        log.info("Er draait al een KDE Roomba.")
-        notify("KDE Roomba draait al", "Hij staat al op je bureaublad (rechtsklik → Afsluiten om te stoppen).")
-        return 0
 
     # Een eerdere versie zette een KWin-vensterregel; die ruimen we op.
     try:
@@ -1248,37 +1447,60 @@ def _main(logfile: Path) -> int:
         log.warning("Opruimen oude KWin-regel mislukt: %s", exc)
 
     cfg = Config.load()
-    screen = app.primaryScreen()
-    geom = screen.availableGeometry()
-    for i, sc in enumerate(app.screens()):
-        g = sc.geometry()
-        log.info("Scherm %d: %s %s %s %dx%d op (%d,%d), schaal %.2f%s", i, sc.name(), sc.manufacturer(), sc.model(),
-                 g.width(), g.height(), g.x(), g.y(), sc.devicePixelRatio(),
-                 " (primair volgens Qt)" if sc == screen else "")
+    server = instance.Server()
+    holder: dict = {}
 
-    w = RoombaWindow(cfg, geom)
-    w.show()
-    log.info("Venster getoond.")
+    def real_screens():
+        return [sc for sc in app.screens() if not sc.geometry().isEmpty()]
 
-    def report():
-        h = w.windowHandle()
-        log.info("Status na 3 s: zichtbaar=%s, blootgesteld=%s, scherm=%s, venster %dx%d, getekend=%s",
-                 w.isVisible(), h.isExposed() if h else "?", h.screen().name() if h and h.screen() else "?",
-                 w.width(), w.height(), getattr(w, "_painted_once", False))
+    def start_window() -> None:
+        if holder.get("w") is not None:
+            return
+        screens = real_screens()
+        if not screens:
+            log.info("Nog geen schermen gevonden; ik wacht tot ze er zijn.")
+            return
+        primary = app.primaryScreen() if app.primaryScreen() in screens else screens[0]
+        for i, sc in enumerate(screens):
+            g = sc.geometry()
+            log.info("Scherm %d: %s %s %s %dx%d op (%d,%d), schaal %.2f%s", i, sc.name(), sc.manufacturer(),
+                     sc.model(), g.width(), g.height(), g.x(), g.y(), sc.devicePixelRatio(),
+                     " (primair volgens Qt)" if sc == primary else "")
+        w = RoombaWindow(cfg, primary.availableGeometry())
+        holder["w"] = w
+        w.show()
+        log.info("Venster getoond.")
+        app.screenAdded.connect(w.screens_changed)
+        app.screenRemoved.connect(w.screens_changed)
+        app.primaryScreenChanged.connect(w.screens_changed)
+        app.aboutToQuit.connect(w.stop_worker)
 
-    QTimer.singleShot(3000, report)
-    if w.wayland and not w.layer_shell:
-        w.say("Let op: layer-shell-qt niet beschikbaar,\nik draai als gewoon venster.", 6)
+        def report():
+            h = w.windowHandle()
+            log.info("Status na 3 s: zichtbaar=%s, blootgesteld=%s, scherm=%s, venster %dx%d, getekend=%s",
+                     w.isVisible(), h.isExposed() if h else "?", h.screen().name() if h and h.screen() else "?",
+                     w.width(), w.height(), getattr(w, "_painted_once", False))
 
-    def on_geom(_g=None):
-        if w.layer_shell:
-            return  # de compositor regelt de grootte
-        g = screen.availableGeometry()
-        if g != w.geom:
-            w.setGeometry(g)
+        QTimer.singleShot(3000, report)
+        if w.wayland and not w.layer_shell:
+            w.say("Let op: layer-shell-qt niet beschikbaar,\nik draai als gewoon venster.", 6)
 
-    screen.availableGeometryChanged.connect(on_geom)
-    app.aboutToQuit.connect(w.stop_worker)
+    def on_command(cmd: str) -> None:
+        w = holder.get("w")
+        if cmd == "quit":
+            QTimer.singleShot(50, app.quit)
+        elif cmd in ("show", "ping"):
+            if w is None:
+                start_window()
+            elif cmd == "show":
+                w.ensure_visible(force=True, reason="opnieuw gestart")
+                w.say("Hier ben ik! 👋", 3)
+
+    server.command.connect(on_command)
+    # schermen nog niet gedetecteerd (vlak na inloggen)? zodra ze er zijn starten
+    app.screenAdded.connect(lambda *_: QTimer.singleShot(1500, start_window))
+    start_window()
+
     rc = app.exec()
     lock.unlock()
     return rc

@@ -9,4 +9,16 @@ Terminal=false
 Categories=Utility;
 StartupNotify=false
 X-KDE-autostart-after=panel
+X-KDE-AutostartPhase=2
 X-GNOME-Autostart-enabled=true
+Actions=Restart;Quit;
+
+[Desktop Action Restart]
+Name=Herstarten
+Icon=view-refresh
+Exec=@BIN@/kde-roomba --restart
+
+[Desktop Action Quit]
+Name=Afsluiten
+Icon=application-exit
+Exec=@BIN@/kde-roomba --quit

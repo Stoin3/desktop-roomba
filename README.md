@@ -45,6 +45,30 @@ Of zonder installatie, direct vanuit de map: `python3 -m kde_roomba`.
 | **Dubbelklik** op de roomba | Opruimen starten |
 | **Slepen naar een Dolphin-map** | De roomba stofzuigt die map (ook: rechtsklik → *Andere map opruimen…*) |
 | **Shift + slepen** | Laadstation verplaatsen (wordt onthouden) |
+| **Rechtsklik → Outfit** | Ander uiterlijk: Klassiek, Wit, Mat zwart, Sportief rood, Oceaanblauw, of cute: Poes 🐱, Panda 🐼, Kikker 🐸, Eenhoorn 🦄, Bijtje 🐝, Lieveheersbeestje 🐞, Spookje 👻 |
+
+### Afsluiten en herstarten
+
+- Rechtsklik op de roomba → **Afsluiten** of **Herstarten**.
+- In het startmenu: rechtsklik op *KDE Roomba* → **Herstarten** / **Afsluiten**.
+- In de terminal:
+
+```bash
+kde-roomba --quit
+```
+
+```bash
+kde-roomba --restart
+```
+
+Start je `kde-roomba` terwijl hij al draait, dan maakt het draaiende exemplaar zich weer zichtbaar.
+Reageert het niet (vastgelopen), dan wordt het gestopt en neemt het nieuwe het over.
+
+### Altijd zichtbaar
+
+Een waakhond controleert elke paar seconden of de roomba zichtbaar is op het juiste scherm (KDE's
+hoofdscherm). Verdwijnt een scherm, worden schermen pas later gedetecteerd (bijv. vlak na het
+inloggen) of start hij voordat er schermen zijn, dan wacht hij en zet hij zichzelf daarna terug.
 | **Rechtsklik** | Menu: opruimen, proefrun, AI aan/uit, geschiedenis, prullenbak, instellingen, afsluiten |
 
 Alle weggegooide bestanden staan in de **prullenbak** en zijn met Dolphin terug te zetten.

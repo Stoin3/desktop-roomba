@@ -40,6 +40,7 @@ _SYMS = {
 }
 # Optioneel (versie-afhankelijk): op het actieve scherm plaatsen.
 _SET_SCREEN = "_ZN12LayerShellQt6Window9setScreenEP7QScreen"                       # >= 6.6
+_CLOSE_ON_DISMISSED = "_ZN12LayerShellQt6Window19setCloseOnDismissedEb"
 _ACTIVE_SCREEN = "_ZN12LayerShellQt6Window26setWantsToBeOnActiveScreenEb"           # >= 6.6
 _SCREEN_CONFIG = "_ZN12LayerShellQt6Window22setScreenConfigurationENS0_19ScreenConfigurationE"  # oudere
 
@@ -94,6 +95,27 @@ _STATE: dict = {}
 LAYER_OVERLAY = 3
 
 
+def move_to_screen(screen) -> str:
+    """Kies (opnieuw) het scherm. Aanroepen terwijl het venster verborgen is;
+    bij het weer tonen maakt layer-shell-qt de laag op dat scherm aan."""
+    from PyQt6 import sip
+
+    lib, win = _STATE.get("lib"), _STATE.get("win")
+    if not lib or not win:
+        return "geen layer-shell"
+    if screen is not None and hasattr(lib, _SET_SCREEN):
+        f = getattr(lib, _SET_SCREEN)
+        f.argtypes, f.restype = [ctypes.c_void_p, ctypes.c_void_p], None
+        f(win, sip.unwrapinstance(screen))
+        return f"scherm {screen.name()}"
+    if hasattr(lib, _ACTIVE_SCREEN):
+        f = getattr(lib, _ACTIVE_SCREEN)
+        f.argtypes, f.restype = [ctypes.c_void_p, ctypes.c_bool], None
+        f(win, True)
+        return "actieve scherm"
+    return "scherm van Qt"
+
+
 def set_layer(layer: int) -> bool:
     """Laag wijzigen terwijl het venster zichtbaar is (bijv. tijdelijk boven
     alle vensters om door Dolphin te rijden). Werkt na enable()."""
@@ -140,7 +162,13 @@ def enable(widget, layer: int = LAYER_BOTTOM, screen=None) -> tuple[bool, str]:
     if not win:
         return False, "LayerShellQt::Window::get gaf niets terug"
     fns["setLayer"](win, layer)
-    _STATE["setLayer"], _STATE["win"] = fns["setLayer"], win
+    _STATE["setLayer"], _STATE["win"], _STATE["lib"] = fns["setLayer"], win, lib
+    # Verdwijnt het scherm (bijv. tijdens schermdetectie na een herstart), dan
+    # het venster NIET sluiten: de waakhond zet het op een ander scherm terug.
+    if hasattr(lib, _CLOSE_ON_DISMISSED):
+        f = getattr(lib, _CLOSE_ON_DISMISSED)
+        f.argtypes, f.restype = [ctypes.c_void_p, ctypes.c_bool], None
+        f(win, False)
     fns["setAnchors"](win, ANCHOR_ALL)
     fns["setExclusiveZone"](win, 0)
     fns["setKeyboardInteractivity"](win, KEYBOARD_ON_DEMAND)

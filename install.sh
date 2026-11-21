@@ -73,6 +73,7 @@ fi
 
 # 4. Meteen starten en controleren ----------------------------------------
 LOG="${XDG_STATE_HOME:-$HOME/.local/state}/kde-roomba/roomba.log"
+"${BIN}/kde-roomba" --quit >/dev/null 2>&1 || true
 pkill -f "python3 -m kde_roomba" 2>/dev/null || true
 sleep 0.5
 rm -f "$LOG"
