@@ -80,6 +80,19 @@ def main() -> int:
     view = views[0]
     # Verkenner linksboven zetten (niet over het laadstation rechtsonder)
     from ctypes import wintypes
+    # eventuele andere Verkenner-vensters (de runner opent er soms twee) minimaliseren
+    others = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def cb(hwnd, _lp):
+        if int(hwnd) != view.top_hwnd and ws._class_name(int(hwnd)) == "CabinetWClass" and user32.IsWindowVisible(hwnd):
+            others.append(int(hwnd))
+        return True
+
+    user32.EnumWindows(cb, 0)
+    for h in others:
+        user32.ShowWindow(wintypes.HWND(h), 6)  # SW_MINIMIZE
+    print("Andere Verkenner-vensters geminimaliseerd:", [hex(h) for h in others], flush=True)
     user32.ShowWindow(wintypes.HWND(view.top_hwnd), 9)  # SW_RESTORE
     for _ in range(10):
         user32.MoveWindow(wintypes.HWND(view.top_hwnd), 10, 10, 600, 420, True)
