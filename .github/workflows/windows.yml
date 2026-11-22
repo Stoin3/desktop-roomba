@@ -22,8 +22,10 @@ jobs:
         run: python -m kde_roomba.windows_shell
         continue-on-error: true
       - name: Echte eind-tot-eindtest (Verkenner + slepen met de muis)
+        if: success() || failure()
         run: python tests/windows_e2e.py
       - name: Roomba.exe bouwen
+        if: success() || failure()
         shell: pwsh
         run: |
           python -m kde_roomba.make_icon windows\roomba.ico

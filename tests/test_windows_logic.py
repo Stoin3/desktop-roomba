@@ -88,8 +88,12 @@ def test_windows_folder_rules(monkeypatch, tmp_path):
     from kde_roomba import folders
     monkeypatch.setattr(folders, "_IS_WIN", True)
     monkeypatch.setenv("ProgramFiles", str(tmp_path / "pf"))
+    for k in ("SystemRoot", "ProgramFiles(x86)", "ProgramData", "APPDATA", "LOCALAPPDATA"):
+        monkeypatch.setenv(k, str(tmp_path / "elders" / k))  # tmp_path ligt op Windows in AppData\Local\Temp
     (tmp_path / "pf" / "App").mkdir(parents=True)
     (tmp_path / "data" / "rommel").mkdir(parents=True)
     assert folders.resolve_folder(str(tmp_path / "pf" / "App"))[0] is None          # programmamap
     assert folders.resolve_folder(str(tmp_path / "data" / "rommel"))[0] is not None  # andere schijf/map mag
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "data"))
+    assert folders.resolve_folder(str(tmp_path / "data" / "rommel"))[0] is None      # AppData blijft dicht
     assert folders.resolve_folder("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}")[0] is None  # 'Deze pc'
