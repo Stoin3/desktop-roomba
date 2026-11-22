@@ -316,6 +316,50 @@ def _folder_view_from_dispatch(disp) -> tuple[IShellBrowser, IFolderView2] | Non
     return browser, view.QueryInterface(IFolderView2)
 
 
+SIGDN_NORMALDISPLAY = 0
+_ICON_MODES = (FVM_ICON, FVM_THUMBNAIL, FVM_THUMBSTRIP)
+
+
+def _item_names(fv: IFolderView2) -> list[tuple[str, str]]:
+    """[(bestandsnaam, weergavenaam)] in de volgorde van de weergave."""
+    out = []
+    for i in range(fv.ItemCount(SVGIO_ALLVIEW)):
+        try:
+            item = fv.GetItem(i, byref(IShellItem._iid_))
+            names = []
+            for sigdn in (SIGDN_PARENTRELATIVEPARSING, SIGDN_NORMALDISPLAY):
+                ptr = item.GetDisplayName(sigdn)
+                names.append(ctypes.wstring_at(ptr))
+                ole32.CoTaskMemFree(c_void_p(ptr))
+            out.append((names[0].rsplit("\\", 1)[-1], names[1]))
+        except (comtypes.COMError, OSError, ValueError) as exc:
+            log.debug("Item %d: %s", i, exc)
+            out.append(("", ""))
+    return out
+
+
+_uia = None
+
+
+def _uia_rects(view_hwnd: int) -> list[tuple[str, tuple[int, int, int, int]]]:
+    """UI Automation: (weergavenaam, rechthoek op het scherm) van elk zichtbaar item.
+    Werkt in álle weergaven (details, lijst, tegels, pictogrammen)."""
+    global _uia
+    UIA = comtypes.client.GetModule("UIAutomationCore.dll")
+    if _uia is None:
+        _uia = comtypes.client.CreateObject(UIA.CUIAutomation, interface=UIA.IUIAutomation)
+    root = _uia.ElementFromHandle(wintypes.HWND(view_hwnd))
+    cond = _uia.CreatePropertyCondition(30003, 50007)  # ControlType == ListItem
+    found = root.FindAll(4, cond)  # TreeScope_Descendants
+    out = []
+    for k in range(found.Length):
+        el = found.GetElement(k)
+        r = el.CurrentBoundingRectangle
+        if r.right - r.left > 0 and r.bottom - r.top > 0 and not el.CurrentIsOffscreen:
+            out.append((str(el.CurrentName), (r.left, r.top, r.right, r.bottom)))
+    return out
+
+
 def _read_view(folder: str, browser: IShellBrowser, fv: IFolderView2, top_hwnd: int | None = None) -> ViewInfo:
     shell_view = fv.QueryInterface(IShellView)
     view_hwnd = int(shell_view.GetWindow() or 0)
@@ -330,26 +374,47 @@ def _read_view(folder: str, browser: IShellBrowser, fv: IFolderView2, top_hwnd: 
         spacing = (sp.x, sp.y)
     except comtypes.COMError:
         spacing = (icon + 40, icon + 40)
-    items: dict[str, tuple[int, int]] = {}
-    count = fv.ItemCount(SVGIO_ALLVIEW)
-    for i in range(count):
-        try:
-            item = fv.GetItem(i, byref(IShellItem._iid_))
-            ptr = item.GetDisplayName(SIGDN_PARENTRELATIVEPARSING)
-            name = ctypes.wstring_at(ptr)
-            ole32.CoTaskMemFree(c_void_p(ptr))
-            pidl = fv.Item(i)
+    names = _item_names(fv)
+    items: dict[str, tuple[float, float]] = {}
+
+    # 1. pictogramweergaven: IFolderView::GetItemPosition (exact, ook buiten beeld)
+    if mode in _ICON_MODES:
+        for i, (fname, _disp) in enumerate(names):
+            if not fname:
+                continue
             try:
-                pt = fv.GetItemPosition(pidl)
-            finally:
-                ole32.CoTaskMemFree(c_void_p(pidl))
-        except (comtypes.COMError, OSError, ValueError):
-            continue
-        if mode in (FVM_ICON, FVM_THUMBNAIL, FVM_THUMBSTRIP):
-            cx, cy = pt.x + spacing[0] / 2, pt.y + icon / 2 + 4
-        else:  # lijst/details/tegels: icoon links in de rij
-            cx, cy = pt.x + icon / 2 + 6, pt.y + max(icon, 16) / 2 + 2
-        items[name.rsplit("\\", 1)[-1]] = (ox + cx, oy + cy)
+                pidl = fv.Item(i)
+                try:
+                    pt = fv.GetItemPosition(pidl)
+                finally:
+                    ole32.CoTaskMemFree(c_void_p(pidl))
+            except (comtypes.COMError, OSError, ValueError) as exc:
+                log.debug("GetItemPosition %s: %s", fname, exc)
+                continue
+            items[fname] = (ox + pt.x + spacing[0] / 2, oy + pt.y + icon / 2 + 4)
+
+    # 2. andere weergaven (details/lijst/tegels) of als 1 niets gaf: UI Automation
+    if len(items) < len([n for n in names if n[0]]):
+        try:
+            rects = _uia_rects(view_hwnd)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("UI Automation niet beschikbaar: %s", exc)
+            rects = []
+        by_display: dict[str, list[str]] = {}
+        for fname, disp in names:
+            if fname and fname not in items:
+                by_display.setdefault(disp, []).append(fname)
+                by_display.setdefault(fname, []).append(fname)
+        for disp, (left, top_, right, bottom) in rects:
+            cands = [c for c in by_display.get(disp, []) if c not in items]
+            if not cands:
+                continue
+            fname = cands[0]
+            if mode in _ICON_MODES:
+                cx, cy = (left + right) / 2, top_ + icon / 2 + 4
+            else:  # rij: icoon links
+                cx, cy = left + 6 + icon / 2, (top_ + bottom) / 2
+            items[fname] = (cx, cy)
     return ViewInfo(folder, top, view_hwnd, client_rect_screen(view_hwnd), int(mode), int(icon), spacing, items)
 
 
@@ -391,7 +456,7 @@ def explorer_views() -> list[ViewInfo]:
                 if user32.IsWindowVisible(wintypes.HWND(info.view_hwnd)):
                     out.append(info)
             except Exception as exc:  # noqa: BLE001 – bv. een Internet-Explorer- of speciaal venster
-                log.debug("Shell-venster %d overgeslagen: %s", i, exc)
+                log.info("Shell-venster %d overgeslagen: %s", i, exc)
     except Exception as exc:  # noqa: BLE001
         log.warning("Verkenner-vensters niet uit te lezen: %s", exc)
     return out
@@ -420,6 +485,8 @@ def refresh_view(view: ViewInfo) -> ViewInfo | None:
 def main() -> int:
     """Diagnose: wat ziet de roomba?  python -m kde_roomba.windows_shell"""
     import sys
+
+    logging.basicConfig(level=logging.DEBUG if "-v" in sys.argv else logging.INFO, format="%(levelname)s %(message)s")
 
     sys.path.insert(0, ".")
     from kde_roomba.brain import desktop_dir

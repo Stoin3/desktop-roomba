@@ -19,7 +19,7 @@ jobs:
       - name: Tests
         run: python -m pytest -q tests
       - name: Diagnose (wat ziet de roomba?)
-        run: python -m kde_roomba.windows_shell
+        run: python -m kde_roomba.windows_shell -v
         continue-on-error: true
       - name: Echte eind-tot-eindtest (Verkenner + slepen met de muis)
         if: success() || failure()
