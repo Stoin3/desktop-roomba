@@ -266,6 +266,8 @@ SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_NOOWNERZORDER = 0x1, 0x2, 0x10, 0x20
 GW_HWNDPREV = 3
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, c_int, c_int, c_int, c_int, c_uint]
 user32.GetWindow.restype = wintypes.HWND
+user32.GetAncestor.restype = wintypes.HWND
+user32.GetAncestor.argtypes = [wintypes.HWND, c_uint]
 user32.FindWindowW.restype = wintypes.HWND
 user32.FindWindowExW.restype = wintypes.HWND
 user32.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
@@ -364,6 +366,9 @@ def _read_view(folder: str, browser: IShellBrowser, fv: IFolderView2, top_hwnd: 
     shell_view = fv.QueryInterface(IShellView)
     view_hwnd = int(shell_view.GetWindow() or 0)
     top = top_hwnd or int(browser.GetWindow() or 0)
+    if not top_hwnd and top:
+        # IShellBrowser::GetWindow kan een binnenvenster geven: neem het hoofdvenster
+        top = int(user32.GetAncestor(wintypes.HWND(top), 2) or top)  # GA_ROOT
     ox, oy = client_origin(view_hwnd)
     try:
         mode, icon = fv.GetViewModeAndIconSize()
