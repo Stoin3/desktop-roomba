@@ -40,7 +40,8 @@ jobs:
           python -m kde_roomba.make_icon windows\roomba.ico
           $common = @("--noconfirm", "--windowed", "--icon", "windows\roomba.ico", "--paths", ".",
                       "--collect-submodules", "comtypes", "--hidden-import", "kde_roomba.windows_shell",
-                      "--hidden-import", "kde_roomba.windows_integration")
+                      "--hidden-import", "kde_roomba.windows_integration",
+                      "--hidden-import", "kde_roomba.windows_com")
           # map-versie (start sneller) en één los bestand
           pyinstaller @common --name Roomba windows\run_roomba.py
           pyinstaller @common --onefile --name Roomba --distpath dist-onefile --workpath build-onefile windows\run_roomba.py

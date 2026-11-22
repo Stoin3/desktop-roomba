@@ -45,6 +45,26 @@ def drag(x0, y0, x1, y1, steps=40) -> None:
     user32.mouse_event(0x0004, 0, 0, 0, 0)  # links omhoog
 
 
+def measure_idle(pid: int, label: str, settle: float = 26.0) -> str:
+    """CPU en geheugen in rust. Wacht eerst tot de roomba compact is en zijn geheugen
+    heeft teruggegeven (na 20 s rust)."""
+    try:
+        import psutil
+    except ImportError:
+        return f"{label}: psutil ontbreekt"
+    mouse_to(5, 5)  # muis weg van de roomba
+    time.sleep(settle)
+    pr = psutil.Process(pid)
+    pr.cpu_percent(None)
+    time.sleep(20)
+    cpu = pr.cpu_percent(None)
+    mi = pr.memory_full_info()
+    msg = (f"{label}: {cpu:.2f}% CPU (van één kern) | Taakbeheer-geheugen (working set) {mi.rss / 2**20:.0f} MB"
+           f" | echt privé (USS) {mi.uss / 2**20:.0f} MB | vastgelegd (private) {mi.private / 2**20:.0f} MB")
+    print(msg, flush=True)
+    return msg
+
+
 def main() -> int:
     folder = Path("C:/roomba-test/Rommel")
     folder.mkdir(parents=True, exist_ok=True)
@@ -134,6 +154,7 @@ def main() -> int:
     print("Venster onder de roomba:", hex(top or 0), ws._class_name(top) if top else "-", flush=True)
     time.sleep(1)
     shot("0-roomba")
+    rust1 = measure_idle(proc.pid, "Windows in rust na opstarten")
 
     # --- 4. slepen naar het Verkenner-venster ------------------------------------
     vx, vy, vw, vh = view.view_rect
@@ -151,22 +172,9 @@ def main() -> int:
     text = log.read_text(errors="replace")
     (OUT / "roomba.log").write_text(text)
 
-    # --- 5. hoeveel kost de roomba in rust? ----------------------------------------
-    try:
-        import psutil
-
-        mouse_to(5, 5)  # muis weg van de roomba
-        time.sleep(6)
-        pr = psutil.Process(proc.pid)
-        pr.cpu_percent(None)
-        time.sleep(15)
-        cpu = pr.cpu_percent(None)
-        mem = pr.memory_info().rss / 1024 / 1024
-        msg = f"Windows in rust: {cpu:.2f}% CPU (van één kern), {mem:.0f} MB geheugen"
-        print(msg, flush=True)
-        (OUT / "rust.txt").write_text(msg + "\n")
-    except Exception as exc:  # noqa: BLE001
-        print("CPU-meting mislukt:", exc, flush=True)
+    # --- 5. hoeveel kost de roomba in rust na een ronde? ------------------------------
+    rust2 = measure_idle(proc.pid, "Windows in rust na een opruimronde")
+    (OUT / "rust.txt").write_text(rust1 + "\n" + rust2 + "\n")
     subprocess.run([sys.executable, "-m", "kde_roomba", "--quit"], cwd=ROOT, timeout=30)
     proc.wait(timeout=20)
     print("Over in de map:", sorted(left), flush=True)

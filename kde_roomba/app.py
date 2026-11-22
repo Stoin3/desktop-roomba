@@ -29,6 +29,8 @@ from PyQt6.QtCore import QFileInfo, QFile, QLockFile
 from . import APP_ID, __version__, art, brain, instance, kwin, outfits, wayland_layer
 
 try:
+    if os.name == "nt":  # D-Bus (Dolphin/KWin) is op Windows niet nodig: niet laden
+        raise ImportError("niet op Windows")
     from . import folder_drop, kwin_windows
 except ImportError as _exc:  # PyQt6.QtDBus ontbreekt: slepen naar mappen uit
     folder_drop = kwin_windows = None
@@ -329,6 +331,8 @@ class RoombaWindow(QWidget):
         if not self.layer_shell:
             self.setGeometry(geom)
 
+        self.view_off = QPointF(0, 0)  # overlay-coördinaten → venstercoördinaten (Windows: compact venster)
+        self.compact = False
         self.hub = self._initial_hub()
         self.robot = Robot(self.hub.x(), self.hub.y(), 0.0)
         self.state = "charging"
@@ -462,6 +466,8 @@ class RoombaWindow(QWidget):
                 self.geom = sc.availableGeometry()
                 if self.win is not None:
                     self.geom = windows_integration.overlay_geometry() or self.geom
+                    self.compact = False
+                    self.view_off = QPointF(0, 0)
                 self.setGeometry(self.geom)
         self._unexposed = 0
         self.show()
@@ -474,12 +480,51 @@ class RoombaWindow(QWidget):
     def now(self) -> float:
         return time.monotonic() - self.t0
 
+    # ------------------------------------------------------------ coördinaten
+    # Alles wordt getekend in 'overlay-coördinaten' (het hele overlaygebied
+    # self.geom). Op Windows is het venster in rust kleiner (alleen rond het
+    # laadstation); view_off is dan de linkerbovenhoek daarvan.
+    def to_overlay(self, global_pos) -> QPointF:
+        return QPointF(self.mapFromGlobal(global_pos)) + self.view_off
+
+    def overlay_rect(self) -> QRectF:
+        return QRectF(0, 0, self.geom.width(), self.geom.height())
+
+    def visible_rect(self) -> QRectF:
+        return QRectF(self.view_off.x(), self.view_off.y(), self.width(), self.height())
+
+    def _evpos(self, ev) -> QPointF:
+        return ev.position() + self.view_off
+
+    def compact_rect(self) -> QRectF:
+        """Klein venstergebied rond het laadstation (incl. ruimte voor de tekstballon)."""
+        R, h = self.R, self.hub
+        return QRectF(h.x() - 330, h.y() - R - 140, 330 + R * 2.9, R + 140 + R * 1.6).intersected(self.overlay_rect())
+
+    def _set_compact(self, on: bool) -> None:
+        """Windows: in rust een klein venster (weinig geheugen, goedkoop tekenen);
+        tijdens het rijden het volledige overlayvenster."""
+        if on == self.compact:
+            return
+        self.compact = on
+        g = self.geom
+        if on:
+            c = self.compact_rect().toAlignedRect()
+            self.view_off = QPointF(c.topLeft())
+            self.setGeometry(QRect(g.topLeft() + c.topLeft(), c.size()))
+        else:
+            self.view_off = QPointF(0, 0)
+            self.setGeometry(g)
+        self._need_full = True
+        self._idle_sig = None
+        self.update()
+
     def hub_area(self) -> QRectF:
         """Gebied waarin het laadstation staat (Windows: bruikbaar deel van het hoofdscherm)."""
         if self.win is not None and QGuiApplication.primaryScreen() is not None:
             a = QGuiApplication.primaryScreen().availableGeometry()
-            tl = QPointF(self.mapFromGlobal(a.topLeft()))
-            return QRectF(tl.x(), tl.y(), a.width(), a.height()).intersected(QRectF(self.rect()))
+            tl = self.to_overlay(a.topLeft())
+            return QRectF(tl.x(), tl.y(), a.width(), a.height()).intersected(self.overlay_rect())
         return QRectF(0, 0, self.geom.width(), self.geom.height())
 
     def _initial_hub(self) -> QPointF:
@@ -935,7 +980,7 @@ class RoombaWindow(QWidget):
         target, why = resolve_folder(folder)
         if target is not None and view is not None and self.cfg.drive_in_dolphin:
             vx, vy, vw, vh = view.view
-            if QRectF(self.rect()).contains(QPointF(vx + vw / 2, vy + vh / 2)):
+            if self.overlay_rect().contains(QPointF(vx + vw / 2, vy + vh / 2)):
                 self.dolphin = {"provider": view}
                 log.info("Verkenner-venster: %s", view.describe())
             else:
@@ -1113,6 +1158,12 @@ class RoombaWindow(QWidget):
         """In rust alleen het stukje rond het laadstation opnieuw tekenen, 10x/s;
         tijdens het rijden het hele venster, 60x/s."""
         animating = self._is_animating(target_alpha)
+        if self.win is not None:
+            r = self.robot
+            docked = abs(r.x - self.hub.x()) < 2 and abs(r.y - self.hub.y()) < 2
+            heavy = bool(self.busy() or self.queue or self.particles or self.flying or r.trail or self.dragging
+                         or self.carrying or self.robot_hidden or not docked)
+            self._set_compact(not heavy)
         want = self.ACTIVE_INTERVAL_MS if animating else self.IDLE_INTERVAL_MS
         if self.timer.interval() != want:
             self.timer.setInterval(want)
@@ -1132,7 +1183,7 @@ class RoombaWindow(QWidget):
         rect = self.hub_rect().united(QRectF(self.robot.x - R * 1.6, self.robot.y - R * 1.6, R * 3.2, R * 3.2))
         if self.hover or self.bubble_alpha > 0.01:
             rect = rect.united(getattr(self, "_bubble_rect", QRectF())).adjusted(-6, -6, 6, 6)
-        self.update(rect.toAlignedRect().adjusted(-4, -4, 4, 4))
+        self.update(rect.translated(-self.view_off).toAlignedRect().adjusted(-4, -4, 4, 4))
 
     # ------------------------------------------------------------ input region
     def interactive_rect(self) -> QRectF:
@@ -1178,6 +1229,7 @@ class RoombaWindow(QWidget):
                      self.width(), self.height(), self.robot.x, self.robot.y,
                      h.screen().name() if h and h.screen() else "?", self.devicePixelRatioF())
         p = QPainter(self)
+        p.translate(-self.view_off)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         t = self.now()
@@ -1289,10 +1341,12 @@ class RoombaWindow(QWidget):
 
         # tekstballon
         self._bubble_rect = art.draw_bubble(p, QPointF(r.x, r.y - R), self.bubble_text, self.bubble_alpha,
-                                            QRectF(self.rect()), below_y=r.y + R)
+                                            self.visible_rect(), below_y=r.y + R)
         p.end()
 
     def resizeEvent(self, ev) -> None:
+        if self.win is not None:
+            return  # Windows: de app regelt zelf de venstergrootte (compact/volledig)
         sz = ev.size()
         if sz.width() <= 0 or sz.height() <= 0:
             return
@@ -1309,7 +1363,7 @@ class RoombaWindow(QWidget):
         return math.hypot(pos.x() - self.robot.x, pos.y() - self.robot.y) <= self.R + 2
 
     def mouseMoveEvent(self, ev) -> None:
-        pos = ev.position()
+        pos = self._evpos(ev)
         self.hover = self.on_roomba(pos)
         if self.press_pos is not None and not self.busy():
             if not self.dragging and (pos - self.press_pos).manhattanLength() > 6:
@@ -1327,8 +1381,8 @@ class RoombaWindow(QWidget):
                 self.robot.x, self.robot.y = self.hub.x(), self.hub.y()
 
     def mousePressEvent(self, ev) -> None:
-        if ev.button() == Qt.MouseButton.LeftButton and self.on_roomba(ev.position()):
-            self.press_pos = ev.position()
+        if ev.button() == Qt.MouseButton.LeftButton and self.on_roomba(self._evpos(ev)):
+            self.press_pos = self._evpos(ev)
         elif ev.button() == Qt.MouseButton.RightButton:
             self.show_menu(ev.globalPosition().toPoint())
 
@@ -1344,7 +1398,7 @@ class RoombaWindow(QWidget):
         self.dragging = False
 
     def mouseDoubleClickEvent(self, ev) -> None:
-        if ev.button() == Qt.MouseButton.LeftButton and self.on_roomba(ev.position()):
+        if ev.button() == Qt.MouseButton.LeftButton and self.on_roomba(self._evpos(ev)):
             if self.busy():
                 self.say("Ik ben al bezig! 🧹", 1.5)
             else:
