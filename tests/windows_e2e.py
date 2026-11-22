@@ -79,7 +79,16 @@ def main() -> int:
     assert views, "Verkenner-venster met de testmap niet gevonden via IShellWindows"
     view = views[0]
     # Verkenner linksboven zetten (niet over het laadstation rechtsonder)
-    user32.SetWindowPos(view.top_hwnd, 0, 20, 20, 640, 460, 0x0040)  # SWP_SHOWWINDOW
+    from ctypes import wintypes
+    user32.ShowWindow(wintypes.HWND(view.top_hwnd), 9)  # SW_RESTORE
+    for _ in range(10):
+        user32.MoveWindow(wintypes.HWND(view.top_hwnd), 10, 10, 600, 420, True)
+        time.sleep(0.5)
+        r = wintypes.RECT()
+        user32.GetWindowRect(wintypes.HWND(view.top_hwnd), ctypes.byref(r))
+        if r.right <= 640 and r.bottom <= 460:
+            break
+    print("Verkenner-venster nu:", (r.left, r.top, r.right, r.bottom), flush=True)
     time.sleep(1.5)
     view = [v for v in ws.explorer_views() if Path(v.folder) == folder][0]
     missing = set(junk) | set(keep)
@@ -108,6 +117,8 @@ def main() -> int:
     assert m and r, "overlay/roomba-positie niet in het log"
     ox, oy, scale = int(m.group(1)), int(m.group(2)), float(m.group(5))
     rx, ry = (ox + int(r.group(1))) * scale, (oy + int(r.group(2))) * scale
+    top = ws.toplevel_at(int(rx), int(ry), set())
+    print("Venster onder de roomba:", hex(top or 0), ws._class_name(top) if top else "-", flush=True)
     time.sleep(1)
     shot("0-roomba")
 
