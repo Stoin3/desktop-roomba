@@ -755,7 +755,7 @@ class RoombaWindow(QWidget):
     def _drive_in_dolphin(self, targets: list) -> list[Action]:
         folder = self.remote_folder
         lay = self._dolphin_layout(folder)
-        log.info("Dolphin-raster: %s", lay.describe())
+        log.info("Mapraster: %s", lay.describe())
         start = lay.positions()
         for v in targets:
             p = start.get(v.info.name)
@@ -1578,8 +1578,9 @@ def _main(args, logfile: Path) -> int:
             global _NOTIFIER
             _NOTIFIER = w.win.notify
             if _is_admin():
-                log.warning("Draait als administrator: Verkenner-vensters zijn dan niet zichtbaar voor de roomba.")
-                w.say("Let op: start me NIET als administrator,\ndan zie ik je Verkenner-vensters niet.", 8)
+                log.warning("Draait als administrator: gewone (niet-admin) Verkenner-vensters zijn dan mogelijk "
+                            "niet zichtbaar voor de roomba.")
+                w.say("Tip: start me niet als administrator,\nanders zie ik je Verkenner-vensters misschien niet.", 6)
         log.info("Venster getoond.")
         app.screenAdded.connect(w.screens_changed)
         app.screenRemoved.connect(w.screens_changed)
