@@ -5,6 +5,11 @@ on:
     branches: ["claude/**", "main"]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Maak een release met deze tag (bijv. v2.1.0); leeg = alleen testen/bouwen"
+        required: false
+        default: ""
 
 permissions:
   contents: write   # nodig om een release aan te maken bij een v*-tag
@@ -42,10 +47,12 @@ jobs:
           Compress-Archive -Path dist\Roomba\* -DestinationPath Roomba-windows.zip -Force
           Get-Item dist-onefile\Roomba.exe, Roomba-windows.zip | Select-Object Name, Length
       - name: Release maken
-        if: success() && startsWith(github.ref, 'refs/tags/v')
+        if: success() && (startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != '')
         uses: softprops/action-gh-release@v2
         with:
-          name: KDE Roomba ${{ github.ref_name }}
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          name: KDE Roomba ${{ inputs.release_tag || github.ref_name }}
           body_path: windows/RELEASE_NOTES.md
           files: |
             dist-onefile/Roomba.exe
