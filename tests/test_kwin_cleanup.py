@@ -4,7 +4,11 @@ import stat
 import sys
 from pathlib import Path
 
+import pytest
+
 from kde_roomba import kwin
+
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="KDE/KWin-specifiek")
 
 FAKE_KWRITE = r'''#!PYTHON
 import sys, configparser, os

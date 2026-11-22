@@ -1,0 +1,39 @@
+name: Windows
+
+on:
+  push:
+    branches: ["claude/**", "main"]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Afhankelijkheden
+        run: python -m pip install -r requirements-windows.txt pytest pillow pyinstaller
+      - name: Tests
+        run: python -m pytest -q tests
+      - name: Diagnose (wat ziet de roomba?)
+        run: python -m kde_roomba.windows_shell
+        continue-on-error: true
+      - name: Echte eind-tot-eindtest (Verkenner + slepen met de muis)
+        run: python tests/windows_e2e.py
+      - name: Roomba.exe bouwen
+        shell: pwsh
+        run: |
+          python -m kde_roomba.make_icon windows\roomba.ico
+          pyinstaller --noconfirm --windowed --name Roomba --icon windows\roomba.ico --paths . `
+            --collect-submodules comtypes --hidden-import kde_roomba.windows_shell `
+            --hidden-import kde_roomba.windows_integration windows\run_roomba.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: roomba-windows
+          path: |
+            e2e-out/
+            dist/Roomba/

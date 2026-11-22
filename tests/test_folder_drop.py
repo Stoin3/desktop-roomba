@@ -11,6 +11,7 @@ from kde_roomba import folder_drop
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Linux-regels")
 def test_resolve_folder_rules(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / "Documenten" / "rommel").mkdir(parents=True)

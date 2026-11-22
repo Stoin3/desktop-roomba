@@ -77,7 +77,32 @@ def human_size(n: int) -> str:
     return f"{n} B"
 
 
+def _windows_desktop() -> Path | None:
+    """Echte bureaubladmap op Windows (ook als OneDrive hem heeft verplaatst)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class GUID(ctypes.Structure):
+            _fields_ = [("a", wintypes.DWORD), ("b", wintypes.WORD), ("c", wintypes.WORD), ("d", ctypes.c_ubyte * 8)]
+
+        # FOLDERID_Desktop {B4BFCC3A-DB2C-424C-B029-7FE99A87C641}
+        fid = GUID(0xB4BFCC3A, 0xDB2C, 0x424C, (ctypes.c_ubyte * 8)(0xB0, 0x29, 0x7F, 0xE9, 0x9A, 0x87, 0xC6, 0x41))
+        out = ctypes.c_wchar_p()
+        if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(fid), 0, None, ctypes.byref(out)) == 0:
+            path = Path(out.value)
+            ctypes.windll.ole32.CoTaskMemFree(out)
+            return path
+    except (OSError, AttributeError, ValueError):
+        pass
+    return None
+
+
 def desktop_dir() -> Path:
+    if os.name == "nt":
+        p = _windows_desktop()
+        if p and p.is_dir():
+            return p
     try:
         out = subprocess.run(["xdg-user-dir", "DESKTOP"], capture_output=True, text=True, timeout=3)
         p = out.stdout.strip()
@@ -148,6 +173,9 @@ def scan_desktop(cfg: Config, folder: Path | None = None) -> list[FileInfo]:
             continue
         try:
             st = e.stat(follow_symlinks=False)
+            # Windows: verborgen/systeembestanden (desktop.ini, thumbs.db, ...) overslaan
+            if getattr(st, "st_file_attributes", 0) & 0x6:  # HIDDEN | SYSTEM
+                continue
         except OSError:
             continue
         is_dir = e.is_dir(follow_symlinks=False)
@@ -404,8 +432,10 @@ def ollama_status(cfg: Config) -> tuple[bool, str]:
             return False, "Ollama is niet geïnstalleerd"
         logging.getLogger("kde-roomba").info("Ollama draait niet; ik start 'ollama serve'.")
         try:
+            extra = ({"creationflags": 0x00000008 | 0x08000000} if os.name == "nt"  # DETACHED, NO_WINDOW
+                     else {"start_new_session": True})
             subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             stdin=subprocess.DEVNULL, start_new_session=True)
+                             stdin=subprocess.DEVNULL, **extra)
         except OSError as exc:
             return False, f"Ollama starten mislukt: {exc}"
         data = None

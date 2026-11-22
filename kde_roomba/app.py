@@ -34,7 +34,13 @@ except ImportError as _exc:  # PyQt6.QtDBus ontbreekt: slepen naar mappen uit
     folder_drop = kwin_windows = None
     _FOLDER_DROP_ERROR = str(_exc)
 from .dolphin_layout import DolphinLayout, Metrics
-from .config import Config, config_dir, state_dir
+from .config import IS_WINDOWS, Config, config_dir, state_dir
+from .folders import resolve_folder
+
+if IS_WINDOWS:
+    from . import windows_integration
+
+FILE_MANAGER = "Verkenner" if IS_WINDOWS else "Dolphin"
 from .desktop_layout import DesktopLayout
 
 log = logging.getLogger("kde-roomba")
@@ -298,15 +304,17 @@ class RoombaWindow(QWidget):
         self.geom = geom
         self.R = cfg.roomba_size / 2
         self.wayland = QGuiApplication.platformName().startswith("wayland")
+        self.win = windows_integration.WinIntegration(self) if IS_WINDOWS else None
         self.desktop = brain.desktop_dir()
 
         self.setWindowTitle("KDE Roomba")
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnBottomHint
-            | Qt.WindowType.WindowDoesNotAcceptFocus
-            | Qt.WindowType.Tool
-        )
+        flags = (Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowDoesNotAcceptFocus
+                 | Qt.WindowType.Tool)
+        if not IS_WINDOWS:
+            # (op Windows legt dit het venster ÓNDER het bureaublad; daar regelt
+            # windows_integration de juiste plek net boven de iconen)
+            flags |= Qt.WindowType.WindowStaysOnBottomHint
+        self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setMouseTracking(True)
@@ -362,7 +370,8 @@ class RoombaWindow(QWidget):
             log.warning("Slepen naar mappen niet beschikbaar: %s", _FOLDER_DROP_ERROR)
             self.drop = type("NoDrop", (), {"ok": False})()
         self._drop_seen = False
-        self.kwinq = kwin_windows.WindowQuery() if kwin_windows is not None else None
+        self.kwinq = kwin_windows.WindowQuery() if kwin_windows is not None and not IS_WINDOWS else None
+        self.carrying = False
         self.dolphin: dict | str | None = None  # None / "pending" / {"client": (x, y, w, h)}
         self.remote_spin = False
         self.raised = False
@@ -451,9 +460,13 @@ class RoombaWindow(QWidget):
             if sc is not None:
                 self.setScreen(sc)
                 self.geom = sc.availableGeometry()
+                if self.win is not None:
+                    self.geom = windows_integration.overlay_geometry() or self.geom
                 self.setGeometry(self.geom)
         self._unexposed = 0
         self.show()
+        if self.win is not None:
+            self.win.after_show()
         if not self.cfg.hub_x:
             self.hub = self._initial_hub()
         self.robot.x, self.robot.y, self.robot.heading = self.hub.x(), self.hub.y(), 0.0
@@ -461,13 +474,22 @@ class RoombaWindow(QWidget):
     def now(self) -> float:
         return time.monotonic() - self.t0
 
+    def hub_area(self) -> QRectF:
+        """Gebied waarin het laadstation staat (Windows: bruikbaar deel van het hoofdscherm)."""
+        if self.win is not None and QGuiApplication.primaryScreen() is not None:
+            a = QGuiApplication.primaryScreen().availableGeometry()
+            tl = QPointF(self.mapFromGlobal(a.topLeft()))
+            return QRectF(tl.x(), tl.y(), a.width(), a.height()).intersected(QRectF(self.rect()))
+        return QRectF(0, 0, self.geom.width(), self.geom.height())
+
     def _initial_hub(self) -> QPointF:
         R = self.R
         if self.cfg.hub_x is not None and self.cfg.hub_y is not None:
             x, y = self.cfg.hub_x, self.cfg.hub_y
         else:
-            x = self.geom.width() - R * 2.6
-            y = self.geom.height() - R * 1.8
+            area = self.hub_area()
+            x = area.right() - R * 2.6
+            y = area.bottom() - R * 1.8
         return self._clamp_hub(QPointF(x, y))
 
     def _clamp_hub(self, p: QPointF) -> QPointF:
@@ -507,6 +529,10 @@ class RoombaWindow(QWidget):
         return result.get(name)
 
     def _compute_icon_positions(self, name: str) -> dict[str, QPointF]:
+        if self.win is not None:
+            exact = self.win.desktop_positions()  # Windows: exacte posities uit Verkenner
+            if exact and (not name or name in exact):
+                return exact
         try:
             entries = [(e.name, e.is_dir()) for e in os.scandir(self.desktop) if not e.name.startswith(".")]
         except OSError:
@@ -697,11 +723,20 @@ class RoombaWindow(QWidget):
 
     # ------------------------------------------------------------ door Dolphin rijden
     def _raise(self) -> None:
+        if self.win is not None:
+            self.win.set_topmost(True)
+            self.raised = True
+            log.info("Tijdelijk boven alle vensters (Windows: topmost)")
+            return
         if wayland_layer.set_layer(wayland_layer.LAYER_TOP):
             self.raised = True
             log.info("Tijdelijk boven alle vensters (layer-shell: top)")
 
     def _lower(self) -> None:
+        if self.raised and self.win is not None:
+            self.win.set_topmost(False)
+            self.raised = False
+            return
         if self.raised and wayland_layer.set_layer(wayland_layer.LAYER_BOTTOM):
             self.raised = False
 
@@ -712,7 +747,9 @@ class RoombaWindow(QWidget):
         return Metrics(avg_char=fm.averageCharWidth(), line_spacing=fm.lineSpacing(),
                        font_height=fm.height(), grid_margin=margin)
 
-    def _dolphin_layout(self, folder: Path) -> DolphinLayout:
+    def _dolphin_layout(self, folder: Path):
+        if "provider" in self.dolphin:  # Windows: exacte posities uit Verkenner
+            return self.dolphin["provider"]
         return DolphinLayout(self.cfg, folder, self.dolphin["client"], self.dolphin_metrics())
 
     def _drive_in_dolphin(self, targets: list) -> list[Action]:
@@ -836,13 +873,11 @@ class RoombaWindow(QWidget):
     def _drag_timeout(self) -> None:
         if not self._drop_seen and self.robot_hidden:
             self.robot_hidden = False
-            self.say("Sleep me naar een map in Dolphin,\ndan stofzuig ik dáár. 📁", 4)
+            self.say(f"Sleep me naar een map in {FILE_MANAGER},\ndan stofzuig ik dáár. 📁", 4)
 
     def on_folder_dropped(self, destination: str) -> None:
         self._drop_seen = True
-        if folder_drop is None:
-            return
-        folder, why = folder_drop.resolve_folder(destination)
+        folder, why = resolve_folder(destination)
         if self.busy():
             self.robot_hidden = False
             self.say("Ik ben al bezig! 🧹", 2)
@@ -877,6 +912,44 @@ class RoombaWindow(QWidget):
             return
         self.dolphin = {"client": (x, y, win["w"], win["h"]), "caption": win.get("caption", "")}
         log.info("Dolphin-venster '%s' op (%d, %d) %dx%d", win.get("caption"), x, y, win["w"], win["h"])
+
+    # ------------------------------------------------------------ Windows: slepen
+    def start_carry(self) -> None:
+        self.carrying = True
+        self.press_pos = None
+        self.robot_hidden = True
+        self.hover = False
+        self.win.start_carry()
+
+    def end_carry(self) -> None:
+        self.carrying = False
+        self.press_pos = None
+        hit = self.win.end_carry()
+        if hit is None:
+            self.robot_hidden = False
+            self.say("Laat me op een Verkenner-venster\nof op het bureaublad vallen. 📁", 4)
+            return
+        folder, view = hit
+        log.info("Neergezet in: %s", folder)
+        self.dolphin = None
+        target, why = resolve_folder(folder)
+        if target is not None and view is not None and self.cfg.drive_in_dolphin:
+            vx, vy, vw, vh = view.view
+            if QRectF(self.rect()).contains(QPointF(vx + vw / 2, vy + vh / 2)):
+                self.dolphin = {"provider": view}
+                log.info("Verkenner-venster: %s", view.describe())
+            else:
+                log.info("Verkenner staat buiten het overlaygebied; ik zuig op afstand.")
+        self._drop_seen = True
+        if self.busy():
+            self.robot_hidden = False
+            self.say("Ik ben al bezig! 🧹", 2)
+            return
+        if target is None:
+            self.robot_hidden = False
+            self.say(f"Daar stofzuig ik liever niet:\n{why}.", 5)
+            return
+        self.start_cleaning(target)
 
     def choose_folder(self) -> None:
         start = str(Path.home())
@@ -977,7 +1050,7 @@ class RoombaWindow(QWidget):
 
         target_alpha = 1.0 if t < self.bubble_until else 0.0
         if self.hover and not self.busy() and t >= self.bubble_until:
-            self.bubble_text = ("Dubbelklik: bureaublad opruimen\nSleep me naar een Dolphin-map\n"
+            self.bubble_text = (f"Dubbelklik: bureaublad opruimen\nSleep me naar een {FILE_MANAGER}-map\n"
                                 "Shift+slepen: verplaatsen • Rechtsklik: menu")
             target_alpha = 1.0
         self.bubble_alpha += (target_alpha - self.bubble_alpha) * min(1.0, dt * 8)
@@ -995,6 +1068,9 @@ class RoombaWindow(QWidget):
         return QRectF(self.hub.x() - R * 1.1, self.hub.y() - R * 1.1, R * 3.6, R * 2.2)
 
     def update_input_region(self) -> None:
+        if self.win is not None:
+            self.win.tick()  # Windows: klik-doorlaten + plek in de z-volgorde
+            return
         handle = self.windowHandle()
         if handle is None:
             return
@@ -1127,8 +1203,8 @@ class RoombaWindow(QWidget):
             p.drawEllipse(self.roomba_pos(), R + 4, R + 4)
 
         # tekstballon
-        art.draw_bubble(p, QPointF(r.x, r.y - R), self.bubble_text, self.bubble_alpha,
-                        QRectF(self.rect()), below_y=r.y + R)
+        self._bubble_rect = art.draw_bubble(p, QPointF(r.x, r.y - R), self.bubble_text, self.bubble_alpha,
+                                            QRectF(self.rect()), below_y=r.y + R)
         p.end()
 
     def resizeEvent(self, ev) -> None:
@@ -1153,6 +1229,9 @@ class RoombaWindow(QWidget):
         if self.press_pos is not None and not self.busy():
             if not self.dragging and (pos - self.press_pos).manhattanLength() > 6:
                 shift = bool(ev.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+                if not shift and self.win is not None:
+                    self.start_carry()
+                    return
                 if not shift and self.drop.ok:
                     self.start_folder_drag()
                     return
@@ -1169,6 +1248,9 @@ class RoombaWindow(QWidget):
             self.show_menu(ev.globalPosition().toPoint())
 
     def mouseReleaseEvent(self, ev) -> None:
+        if self.carrying:
+            self.end_carry()
+            return
         if self.dragging:
             self.cfg.hub_x, self.cfg.hub_y = int(self.hub.x()), int(self.hub.y())
             self.cfg.save()
@@ -1304,8 +1386,23 @@ def open_url(url: str) -> None:
         subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+_NOTIFIER = None
+
+
+def _is_admin() -> bool:
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
+
+
 def notify(title: str, body: str) -> None:
     """Bureaubladmelding, zodat fouten nooit 'stil' zijn."""
+    if _NOTIFIER is not None:
+        _NOTIFIER(title, body)
+        return
     if shutil.which("notify-send"):
         subprocess.Popen(["notify-send", "-a", "KDE Roomba", "-i", "edit-clear-all", title, body],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1318,7 +1415,8 @@ def setup_logging(to_file: bool) -> Path:
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     root = logging.getLogger()
     root.setLevel(logging.INFO)
-    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root.handlers):
+    if sys.stderr is not None and not any(
+            isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root.handlers):
         sh = logging.StreamHandler()
         sh.setFormatter(fmt)
         root.addHandler(sh)
@@ -1333,8 +1431,11 @@ def restart_self() -> None:
     """Nieuw exemplaar starten dat het overneemt, en dit exemplaar afsluiten."""
     from PyQt6.QtCore import QProcess
 
-    workdir = str(Path(__file__).resolve().parent.parent)
-    ok = QProcess.startDetached(sys.executable, ["-m", "kde_roomba", "--restart"], workdir)
+    if getattr(sys, "frozen", False):  # gebouwde Roomba.exe
+        ok = QProcess.startDetached(sys.executable, ["--restart"], str(Path(sys.executable).parent))
+    else:
+        workdir = str(Path(__file__).resolve().parent.parent)
+        ok = QProcess.startDetached(sys.executable, ["-m", "kde_roomba", "--restart"], workdir)
     log.info("Herstarten (nieuw proces gestart: %s)", ok)
     QApplication.quit()
 
@@ -1466,9 +1567,19 @@ def _main(args, logfile: Path) -> int:
             log.info("Scherm %d: %s %s %s %dx%d op (%d,%d), schaal %.2f%s", i, sc.name(), sc.manufacturer(),
                      sc.model(), g.width(), g.height(), g.x(), g.y(), sc.devicePixelRatio(),
                      " (primair volgens Qt)" if sc == primary else "")
-        w = RoombaWindow(cfg, primary.availableGeometry())
+        geom = primary.availableGeometry()
+        if IS_WINDOWS:
+            geom = windows_integration.overlay_geometry() or geom
+        w = RoombaWindow(cfg, geom)
         holder["w"] = w
         w.show()
+        if w.win is not None:
+            w.win.after_show()
+            global _NOTIFIER
+            _NOTIFIER = w.win.notify
+            if _is_admin():
+                log.warning("Draait als administrator: Verkenner-vensters zijn dan niet zichtbaar voor de roomba.")
+                w.say("Let op: start me NIET als administrator,\ndan zie ik je Verkenner-vensters niet.", 8)
         log.info("Venster getoond.")
         app.screenAdded.connect(w.screens_changed)
         app.screenRemoved.connect(w.screens_changed)

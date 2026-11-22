@@ -8,12 +8,19 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 
+IS_WINDOWS = os.name == "nt"
+
+
 def config_dir() -> Path:
+    if IS_WINDOWS and not os.environ.get("XDG_CONFIG_HOME"):
+        return Path(os.environ.get("APPDATA") or os.path.expanduser("~/AppData/Roaming")) / "kde-roomba"
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     return Path(base) / "kde-roomba"
 
 
 def state_dir() -> Path:
+    if IS_WINDOWS and not os.environ.get("XDG_STATE_HOME"):
+        return Path(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/AppData/Local")) / "kde-roomba"
     base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
     return Path(base) / "kde-roomba"
 
@@ -39,7 +46,8 @@ class Config:
     allow_folders: bool = False
     # Extensies die nooit weggegooid worden.
     protected_extensions: list[str] = field(
-        default_factory=lambda: [".desktop", ".kdbx", ".key", ".pem", ".gpg", ".odt", ".docx", ".xlsx", ".ods"]
+        default_factory=lambda: [".desktop", ".lnk", ".url", ".kdbx", ".key", ".pem", ".gpg", ".odt", ".docx",
+                                 ".xlsx", ".ods", ".pptx", ".ini"]
     )
     # Maximaal aantal bestanden per schoonmaakronde.
     max_files_per_run: int = 15

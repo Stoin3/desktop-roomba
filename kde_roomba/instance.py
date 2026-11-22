@@ -24,7 +24,11 @@ log = logging.getLogger("kde-roomba")
 
 
 def socket_name() -> str:
-    return f"kde-roomba-{os.getuid()}"
+    if hasattr(os, "getuid"):
+        return f"kde-roomba-{os.getuid()}"
+    import getpass
+
+    return f"kde-roomba-{getpass.getuser()}"
 
 
 def send(cmd: str, timeout_ms: int = 1500) -> str | None:
@@ -44,6 +48,72 @@ def send(cmd: str, timeout_ms: int = 1500) -> str | None:
             data += bytes(sock.readAll())
     sock.disconnectFromServer()
     return data.decode(errors="replace").strip() or None
+
+
+def _process_cmdline(pid: int) -> str | None:
+    """Opdrachtregel/programma van een proces; None = onbekend."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+            if not h:
+                return ""
+            buf = ctypes.create_unicode_buffer(1024)
+            size = wintypes.DWORD(1024)
+            ok = ctypes.windll.kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size))
+            ctypes.windll.kernel32.CloseHandle(h)
+            # python.exe of roomba.exe: argumenten zijn hier niet zichtbaar
+            return None if ok and ("python" in buf.value.lower() or "roomba" in buf.value.lower()) else ""
+        except (OSError, AttributeError):
+            return None
+    try:
+        return open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace")
+    except OSError:
+        return ""
+
+
+def _alive(pid: int) -> bool:
+    if os.name == "nt":  # let op: os.kill(pid, 0) BEËINDIGT een proces op Windows
+        import ctypes
+
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(h)
+        return code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _terminate(pid: int) -> None:
+    if os.name == "nt":
+        import ctypes
+
+        h = ctypes.windll.kernel32.OpenProcess(0x0001 | 0x1000, False, pid)  # TERMINATE | QUERY
+        if h:
+            ctypes.windll.kernel32.TerminateProcess(h, 1)
+            ctypes.windll.kernel32.WaitForSingleObject(h, 3000)
+            ctypes.windll.kernel32.CloseHandle(h)
+        return
+    for sig, wait in ((signal.SIGTERM, 2.0), (signal.SIGKILL, 1.0)):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return
+        end = time.monotonic() + wait
+        while time.monotonic() < end:
+            if not _alive(pid):
+                return
+            time.sleep(0.1)
 
 
 class Lock:
@@ -66,30 +136,13 @@ class Lock:
         if not pid:
             self.lock.removeStaleLockFile()
             return True
-        try:
-            cmdline = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace")
-        except OSError:
-            cmdline = ""
-        if "kde_roomba" not in cmdline:
+        cmdline = _process_cmdline(pid)
+        if cmdline is not None and "kde_roomba" not in cmdline and "roomba" not in cmdline.lower():
             log.info("Lock hoort bij proces %s dat geen roomba is; lock opruimen.", pid)
             self.lock.removeStaleLockFile()
             return True
         log.warning("Vastgelopen roomba (pid %s) wordt gestopt.", pid)
-        for sig, wait in ((signal.SIGTERM, 2.0), (signal.SIGKILL, 1.0)):
-            try:
-                os.kill(pid, sig)
-            except ProcessLookupError:
-                break
-            end = time.monotonic() + wait
-            while time.monotonic() < end:
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
-                    break
-                time.sleep(0.1)
-            else:
-                continue
-            break
+        _terminate(pid)
         self.lock.removeStaleLockFile()
         return True
 

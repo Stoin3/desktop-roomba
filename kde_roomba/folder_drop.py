@@ -19,9 +19,6 @@ nepbestanden, menuutjes of instellingen te wijzigen.
 from __future__ import annotations
 
 import logging
-import os
-import urllib.parse
-from pathlib import Path
 
 from PyQt6.QtCore import QMimeData, QObject, QTimer, pyqtClassInfo, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection
@@ -68,30 +65,4 @@ class DropReceiver(QObject):
         return md
 
 
-def resolve_folder(destination: str) -> tuple[Path | None, str]:
-    """Controleert of we in deze map mogen stofzuigen. (map, uitleg)"""
-    d = destination.strip()
-    if d.startswith("file://"):
-        d = urllib.parse.unquote(urllib.parse.urlparse(d).path)
-    if "://" in d or not d.startswith("/"):
-        return None, "ik kan alleen in mappen op deze computer stofzuigen"
-    p = Path(d)
-    try:
-        p = p.resolve()
-    except OSError:
-        pass
-    if not p.is_dir():
-        return None, "dat is geen map"
-    home = Path.home().resolve()
-    if p == home or p == Path("/"):
-        return None, "je hele thuismap is me te groot – kies een map erin"
-    if any(part.startswith(".") for part in p.parts):
-        return None, "verborgen (systeem)mappen laat ik met rust"
-    try:
-        p.relative_to(home)
-    except ValueError:
-        if not (p.parts[:2] in (("/", "run"), ("/", "media"), ("/", "mnt")) or str(p).startswith("/tmp")):
-            return None, "buiten je thuismap stofzuig ik niet"
-    if not os.access(p, os.W_OK):
-        return None, "daar mag ik niets weggooien (geen schrijfrechten)"
-    return p, "ok"
+from .folders import resolve_folder  # noqa: E402,F401 (voor bestaande aanroepen)
