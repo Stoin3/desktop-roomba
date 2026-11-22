@@ -13,6 +13,34 @@ Alles van bovenaf gezien, alsof er echt een roomba over je bureaublad rijdt:
 - stofbak-indicator die voller raakt, vonkjes bij het aankoppelen
 - tekstballonnen met wat hij doet en waarom
 
+## Windows
+
+Er is ook een Windows-versie (Windows 10/11). Zelfde roomba, zelfde outfits en AI, maar met de
+mogelijkheden die Windows biedt:
+
+| | Windows | KDE (Wayland) |
+|---|---|---|
+| Iconposities bureaublad | **exact** (Shell-API `IFolderView`) | berekend uit Plasma-instellingen |
+| Rondrijden in mappen | **Verkenner**, exacte bestandsposities | Dolphin, berekend |
+| Welke map onder de roomba | venster onder de muis + `IShellWindows` | Ark-sleepprotocol via D-Bus |
+| Overlay | net boven de bureaubladiconen; tijdens een ronde boven alles | layer-shell bottom/top |
+| Meerdere schermen | overlay over alle schermen (gelijke schaal) | per scherm |
+| Bediening | roomba + systeemvak-icoon | roomba |
+| Prullenbak | Windows-prullenbak (terug te zetten) | freedesktop-prullenbak |
+
+**Installeren:** download de repository (Code → Download ZIP), pak uit en dubbelklik
+`windows\install.cmd`. Geen administrator nodig (start de roomba ook níet als administrator:
+dan mag hij je Verkenner-vensters niet zien). Het script installeert Python (via winget) met PyQt6 en
+comtypes, maakt snelkoppelingen in het Startmenu (*Roomba*, *Roomba herstarten*, *Roomba afsluiten*),
+vraagt of hij bij aanmelden moet starten en biedt Ollama + het AI-model aan.
+
+Losse `Roomba.exe`: `windows\build-exe.ps1`, of download het artefact *roomba-windows* van de
+GitHub Actions-run (die test de Windows-versie ook echt: Verkenner openen, roomba erheen slepen,
+afval weg, nuttige bestanden blijven).
+
+Wat ziet de roomba? Diagnose: `python -m kde_roomba.windows_shell` (in `%LOCALAPPDATA%\kde-roomba\app`).
+Instellingen en log: `%APPDATA%\kde-roomba\config.json` en `%LOCALAPPDATA%\kde-roomba\roomba.log`.
+
 ## Installeren
 
 ```bash
