@@ -1142,7 +1142,7 @@ class RoombaWindow(QWidget):
             cache[key] = (pm, off)
         return cache[key]
 
-    IDLE_INTERVAL_MS = 100   # in rust: 10 beelden/s (ademend laadlampje)
+    IDLE_INTERVAL_MS = 200   # in rust: 5 controles/s (laadlampje verandert hooguit ~3x/s)
     ACTIVE_INTERVAL_MS = 16  # bezig: ~60 beelden/s
 
     def _is_animating(self, target_alpha: float) -> bool:
@@ -1746,6 +1746,24 @@ def _main(args, logfile: Path) -> int:
             elif cmd == "show":
                 w.ensure_visible(force=True, reason="opnieuw gestart")
                 w.say("Hier ben ik! 👋", 3)
+
+    prof_spec = os.environ.get("KDE_ROOMBA_PROFILE", "")
+    if prof_spec:  # diagnose: "start,duur" in seconden → profiel van die periode in het log
+        import cProfile
+        import io
+        import pstats
+
+        start_s, dur_s = (float(x) for x in prof_spec.split(","))
+        prof = cProfile.Profile()
+
+        def prof_stop():
+            prof.disable()
+            buf = io.StringIO()
+            pstats.Stats(prof, stream=buf).sort_stats("tottime").print_stats(25)
+            log.info("PROFIEL (%.0f s in rust):\n%s", dur_s, buf.getvalue())
+
+        QTimer.singleShot(int(start_s * 1000), prof.enable)
+        QTimer.singleShot(int((start_s + dur_s) * 1000), prof_stop)
 
     server.command.connect(on_command)
     # schermen nog niet gedetecteerd (vlak na inloggen)? zodra ze er zijn starten

@@ -149,13 +149,18 @@ def place_on_desktop(hwnd: int) -> None:
     """Net boven de bureaubladiconen, onder alle gewone vensters.
     (HWND_BOTTOM zou ons ónder het bureaublad leggen: onzichtbaar.)"""
     flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOOWNERZORDER
-    user32.SetWindowPos(wintypes.HWND(hwnd), wintypes.HWND(HWND_NOTOPMOST), 0, 0, 0, 0, flags)
     host = desktop_icon_host()
+    topmost = bool(user32.GetWindowLongW(wintypes.HWND(hwnd), -20) & 0x8)  # GWL_EXSTYLE, WS_EX_TOPMOST
+    above = user32.GetWindow(wintypes.HWND(host), GW_HWNDPREV) if host else None
+    if not topmost and above and int(above) == hwnd:
+        return  # ligt al goed: niets doen (elke SetWindowPos laat Windows opnieuw samenstellen)
+    if topmost:
+        user32.SetWindowPos(wintypes.HWND(hwnd), wintypes.HWND(HWND_NOTOPMOST), 0, 0, 0, 0, flags)
     if not host:
         return
     above = user32.GetWindow(wintypes.HWND(host), GW_HWNDPREV)
     if above and int(above) == hwnd:
-        return  # ligt al goed
+        return
     # 'insert after' X = direct ónder X; X = het venster boven de iconenhost
     insert_after = above if above else wintypes.HWND(0)
     user32.SetWindowPos(wintypes.HWND(hwnd), insert_after, 0, 0, 0, 0, flags)

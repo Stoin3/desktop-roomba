@@ -195,26 +195,30 @@ def _item_names(fv: IFolderView2) -> list[tuple[str, str]]:
     return out
 
 
-_uia = None
 
 
 def _uia_rects(view_hwnd: int) -> list[tuple[str, tuple[int, int, int, int]]]:
     """UI Automation: (weergavenaam, rechthoek op het scherm) van elk zichtbaar item.
     Werkt in álle weergaven (details, lijst, tegels, pictogrammen)."""
-    global _uia
+    # UI Automation alleen tijdens de vraag gebruiken en daarna loslaten: een
+    # levend UIA-object laat Windows op de achtergrond doorwerken (CPU in rust).
     UIA = comtypes.client.GetModule("UIAutomationCore.dll")
-    if _uia is None:
-        _uia = comtypes.client.CreateObject(UIA.CUIAutomation, interface=UIA.IUIAutomation)
-    root = _uia.ElementFromHandle(wintypes.HWND(view_hwnd))
-    cond = _uia.CreatePropertyCondition(30003, 50007)  # ControlType == ListItem
-    found = root.FindAll(4, cond)  # TreeScope_Descendants
-    out = []
-    for k in range(found.Length):
-        el = found.GetElement(k)
-        r = el.CurrentBoundingRectangle
-        if r.right - r.left > 0 and r.bottom - r.top > 0 and not el.CurrentIsOffscreen:
-            out.append((str(el.CurrentName), (r.left, r.top, r.right, r.bottom)))
-    return out
+    uia = comtypes.client.CreateObject(UIA.CUIAutomation, interface=UIA.IUIAutomation)
+    try:
+        root = uia.ElementFromHandle(wintypes.HWND(view_hwnd))
+        cond = uia.CreatePropertyCondition(30003, 50007)  # ControlType == ListItem
+        found = root.FindAll(4, cond)  # TreeScope_Descendants
+        out = []
+        for k in range(found.Length):
+            el = found.GetElement(k)
+            r = el.CurrentBoundingRectangle
+            if r.right - r.left > 0 and r.bottom - r.top > 0 and not el.CurrentIsOffscreen:
+                out.append((str(el.CurrentName), (r.left, r.top, r.right, r.bottom)))
+            del el
+        del found, cond, root
+        return out
+    finally:
+        del uia
 
 
 def _read_view(folder: str, browser: IShellBrowser, fv: IFolderView2, top_hwnd: int | None = None) -> ViewInfo:

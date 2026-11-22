@@ -138,7 +138,8 @@ def main() -> int:
     log = state / "roomba.log"
     if log.exists():
         log.unlink()
-    proc = subprocess.Popen([sys.executable, "-m", "kde_roomba"], cwd=ROOT)
+    env = dict(os.environ, KDE_ROOMBA_PROFILE="12,20")  # profiel van 20 s rust na opstarten
+    proc = subprocess.Popen([sys.executable, "-m", "kde_roomba"], cwd=ROOT, env=env)
     for _ in range(40):
         time.sleep(0.5)
         if log.exists() and "Status na 3 s" in log.read_text(errors="replace"):
@@ -175,6 +176,9 @@ def main() -> int:
     # --- 5. hoeveel kost de roomba in rust na een ronde? ------------------------------
     rust2 = measure_idle(proc.pid, "Windows in rust na een opruimronde")
     (OUT / "rust.txt").write_text(rust1 + "\n" + rust2 + "\n")
+    full = log.read_text(errors="replace")
+    if "PROFIEL" in full:
+        print(full[full.index("PROFIEL"):][:6000], flush=True)
     subprocess.run([sys.executable, "-m", "kde_roomba", "--quit"], cwd=ROOT, timeout=30)
     proc.wait(timeout=20)
     print("Over in de map:", sorted(left), flush=True)
