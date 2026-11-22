@@ -59,6 +59,11 @@ def main() -> int:
     for f in folder.iterdir():
         os.utime(f, (old, old))
 
+    # Zoals een echt bureaublad: andere vensters (o.a. de runner-console) weg,
+    # zodat de roomba rechtsonder zichtbaar is.
+    import comtypes.client
+    comtypes.client.CreateObject("Shell.Application").MinimizeAll()
+    time.sleep(1.5)
     subprocess.Popen(["explorer.exe", str(folder)])
     time.sleep(5)
 
@@ -73,6 +78,10 @@ def main() -> int:
     views = [v for v in ws.explorer_views() if Path(v.folder) == folder]
     assert views, "Verkenner-venster met de testmap niet gevonden via IShellWindows"
     view = views[0]
+    # Verkenner linksboven zetten (niet over het laadstation rechtsonder)
+    user32.SetWindowPos(view.top_hwnd, 0, 20, 20, 640, 460, 0x0040)  # SWP_SHOWWINDOW
+    time.sleep(1.5)
+    view = [v for v in ws.explorer_views() if Path(v.folder) == folder][0]
     missing = set(junk) | set(keep)
     missing -= set(view.items)
     assert not missing, f"Bestanden niet gezien in IFolderView: {missing}"
