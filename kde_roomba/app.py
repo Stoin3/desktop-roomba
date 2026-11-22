@@ -1118,7 +1118,8 @@ class RoombaWindow(QWidget):
         dan maar één drawPixmap in plaats van tientallen verlopen/schaduwen."""
         level = self._dock_level(t)
         R, dpr = self.R, self.devicePixelRatioF()
-        key = (self.cfg.outfit, R, dpr, level)
+        fill = round(min(1.0, self.robot.bin_fill) * 5) / 5  # stofbakstand (na een ronde gevuld)
+        key = (self.cfg.outfit, R, dpr, level, fill)
         cache = self.__dict__.setdefault("_dock_cache", {})
         if key not in cache:
             if len(cache) > self.DOCK_LEVELS * 2:
@@ -1136,7 +1137,7 @@ class RoombaWindow(QWidget):
             q.translate(off, off)
             art.draw_hub_base(q, R, tl, True, True)
             art.draw_shadow(q, R)
-            art.draw_roomba(q, R, "charging", tl, self.robot.brush_angle, 0.0, 0.0, outfits.get(self.cfg.outfit))
+            art.draw_roomba(q, R, "charging", tl, self.robot.brush_angle, 0.0, fill, outfits.get(self.cfg.outfit))
             art.draw_hub_tower(q, R, tl, True)
             q.end()
             cache[key] = (pm, off)
@@ -1174,7 +1175,7 @@ class RoombaWindow(QWidget):
             return
         # In rust: alleen opnieuw tekenen als er echt iets verandert
         # (helderheidsstap van het laadlampje, hover, ballontekst).
-        sig = (self._dock_level(self.now()), self.hover, self.bubble_text if self.bubble_alpha > 0.01 else "",
+        sig = (self._dock_level(self.now()), round(self.robot.bin_fill * 5), self.hover, self.bubble_text if self.bubble_alpha > 0.01 else "",
                self.cfg.outfit, self.hub.x(), self.hub.y())
         if sig == getattr(self, "_idle_sig", None):
             return
@@ -1240,7 +1241,7 @@ class RoombaWindow(QWidget):
         # In rust (aangekoppeld, laden): één kant-en-klaar plaatje van het hele
         # laadstation + roomba, per helderheid van het laadlampje (zie _dock_pixmap).
         cached_dock = (self.state == "charging" and docked and abs(r.heading) < 1e-3
-                       and r.brush_speed < 0.01 and r.bin_fill == 0 and not self.flying)
+                       and r.brush_speed < 0.01 and not self.flying)
         if cached_dock:
             pm, off = self._dock_pixmap(t)
             p.drawPixmap(QPointF(self.hub.x() - off, self.hub.y() - off), pm)

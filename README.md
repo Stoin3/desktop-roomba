@@ -212,11 +212,20 @@ nieuwe vensters weer een titelbalk (bestaande na opnieuw openen).
 
 ### Hoe zwaar is hij?
 
-In rust (aangekoppeld) gebruikt de roomba ongeveer **1% van één CPU-kern** en ~85 MB geheugen; met
-`"idle_animation": false` ongeveer **0,3%**. Hij tekent dan alleen het laadstation opnieuw, en
-alleen als het laadlampje van helderheid verandert (uit een kant-en-klaar plaatje). Alleen tijdens
-een opruimronde draait hij op 60 beelden per seconde. Het AI-model (Ollama) draait alleen tijdens
-het nadenken.
+Gemeten in rust (aangekoppeld), op een echte Windows-machine (GitHub Actions) en op Linux/Wayland:
+
+| In rust | CPU (van één kern) | Geheugen (echt privé) |
+|---|---|---|
+| Windows, na opstarten | ~0% | ~72 MB |
+| Windows, zuinige modus (rechtsklik → Zuinig) | ~0,2% | ~71 MB |
+| Linux/Wayland | ~1% (zuinig ~0,3%) | ~65 MB |
+
+Hoe: in rust tekent hij alleen het laadstation, uit een kant-en-klaar plaatje, en alleen als het
+laadlampje van helderheid verandert. Op Windows is het venster in rust bovendien klein (alleen rond het
+laadstation) en worden COM/UI Automation pas geladen als hij echt gaat werken (daarna ~+11 MB).
+Ongeveer 40 MB van het geheugen is de ondergrens van Python + Qt zelf (een leeg PyQt6-venster).
+Alleen tijdens een opruimronde draait hij op 60 beelden per seconde; het AI-model (Ollama) draait
+alleen tijdens het nadenken.
 
 ## Verwijderen
 
