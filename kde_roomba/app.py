@@ -386,7 +386,7 @@ class RoombaWindow(QWidget):
         cache = getattr(self, "_primary_cache", None)
         if self.cfg.screen:
             want = self.cfg.screen
-        elif cache and now - cache[0] < 15:
+        elif cache and now - cache[0] < 60:  # (schermwijzigingen wissen de cache meteen)
             want = cache[1]
         else:
             want = wayland_layer.kde_primary_output()
@@ -1056,7 +1056,83 @@ class RoombaWindow(QWidget):
         self.bubble_alpha += (target_alpha - self.bubble_alpha) * min(1.0, dt * 8)
 
         self.update_input_region()
-        self.update()
+        self._schedule_paint(target_alpha)
+
+    # ------------------------------------------------------------ zuinig tekenen
+    DOCK_LEVELS = 8
+
+    def _dock_level(self, t: float) -> int:
+        if not self.cfg.idle_animation:
+            return self.DOCK_LEVELS - 1  # vast lampje: in rust helemaal geen nieuwe beelden
+        inten = art.charge_intensity(t)
+        return max(0, min(self.DOCK_LEVELS - 1, round((inten - 0.35) / 0.65 * (self.DOCK_LEVELS - 1))))
+
+    def _dock_pixmap(self, t: float) -> tuple[QPixmap, float]:
+        """Laadstation + aangekoppelde roomba als één plaatje (gecachet per
+        helderheidsstap van het ademende laadlampje): in rust kost elk beeld
+        dan maar één drawPixmap in plaats van tientallen verlopen/schaduwen."""
+        level = self._dock_level(t)
+        R, dpr = self.R, self.devicePixelRatioF()
+        key = (self.cfg.outfit, R, dpr, level)
+        cache = self.__dict__.setdefault("_dock_cache", {})
+        if key not in cache:
+            if len(cache) > self.DOCK_LEVELS * 2:
+                cache.clear()
+            # tijdstip waarop het lampje precies deze helderheid heeft
+            x = max(-1.0, min(1.0, (level / (self.DOCK_LEVELS - 1)) * 2 - 1))
+            tl = math.asin(x) / art.BREATH_SPEED
+            off = R * 1.9
+            w, h = R * 4.4, R * 3.8
+            pm = QPixmap(int(w * dpr) + 2, int(h * dpr) + 2)
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(Qt.GlobalColor.transparent)
+            q = QPainter(pm)
+            q.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            q.translate(off, off)
+            art.draw_hub_base(q, R, tl, True, True)
+            art.draw_shadow(q, R)
+            art.draw_roomba(q, R, "charging", tl, self.robot.brush_angle, 0.0, 0.0, outfits.get(self.cfg.outfit))
+            art.draw_hub_tower(q, R, tl, True)
+            q.end()
+            cache[key] = (pm, off)
+        return cache[key]
+
+    IDLE_INTERVAL_MS = 100   # in rust: 10 beelden/s (ademend laadlampje)
+    ACTIVE_INTERVAL_MS = 16  # bezig: ~60 beelden/s
+
+    def _is_animating(self, target_alpha: float) -> bool:
+        r = self.robot
+        return bool(
+            self.busy() or self.queue or self.particles or self.flying or r.trail
+            or self.dragging or self.carrying or self.robot_hidden
+            or abs(self.bubble_alpha - target_alpha) > 0.01 or r.brush_speed > 0.01
+            or (self.now() - self.sparks_at) < 0.7
+        )
+
+    def _schedule_paint(self, target_alpha: float) -> None:
+        """In rust alleen het stukje rond het laadstation opnieuw tekenen, 10x/s;
+        tijdens het rijden het hele venster, 60x/s."""
+        animating = self._is_animating(target_alpha)
+        want = self.ACTIVE_INTERVAL_MS if animating else self.IDLE_INTERVAL_MS
+        if self.timer.interval() != want:
+            self.timer.setInterval(want)
+        if animating or getattr(self, "_need_full", True):
+            self._need_full = animating  # na het stoppen nog één volledig beeld
+            self._idle_sig = None
+            self.update()
+            return
+        # In rust: alleen opnieuw tekenen als er echt iets verandert
+        # (helderheidsstap van het laadlampje, hover, ballontekst).
+        sig = (self._dock_level(self.now()), self.hover, self.bubble_text if self.bubble_alpha > 0.01 else "",
+               self.cfg.outfit, self.hub.x(), self.hub.y())
+        if sig == getattr(self, "_idle_sig", None):
+            return
+        self._idle_sig = sig
+        R = self.R
+        rect = self.hub_rect().united(QRectF(self.robot.x - R * 1.6, self.robot.y - R * 1.6, R * 3.2, R * 3.2))
+        if self.hover or self.bubble_alpha > 0.01:
+            rect = rect.united(getattr(self, "_bubble_rect", QRectF())).adjusted(-6, -6, 6, 6)
+        self.update(rect.toAlignedRect().adjusted(-4, -4, 4, 4))
 
     # ------------------------------------------------------------ input region
     def interactive_rect(self) -> QRectF:
@@ -1109,11 +1185,19 @@ class RoombaWindow(QWidget):
         r = self.robot
         docked = (abs(r.x - self.hub.x()) < 2 and abs(r.y - self.hub.y()) < 2) and not self.robot_hidden
 
-        # laadstation (plaat)
-        p.save()
-        p.translate(self.hub)
-        art.draw_hub_base(p, R, t, self.state == "charging", docked)
-        p.restore()
+        # In rust (aangekoppeld, laden): één kant-en-klaar plaatje van het hele
+        # laadstation + roomba, per helderheid van het laadlampje (zie _dock_pixmap).
+        cached_dock = (self.state == "charging" and docked and abs(r.heading) < 1e-3
+                       and r.brush_speed < 0.01 and r.bin_fill == 0 and not self.flying)
+        if cached_dock:
+            pm, off = self._dock_pixmap(t)
+            p.drawPixmap(QPointF(self.hub.x() - off, self.hub.y() - off), pm)
+        else:
+            # laadstation (plaat)
+            p.save()
+            p.translate(self.hub)
+            art.draw_hub_base(p, R, t, self.state == "charging", docked)
+            p.restore()
 
         # spoor: subtiele 'gestofzuigde' baan (per vervaagniveau één pad,
         # zodat overlappende stukjes niet optellen)
@@ -1170,7 +1254,7 @@ class RoombaWindow(QWidget):
 
         # roomba
         p.save()
-        if self.robot_hidden:
+        if self.robot_hidden or cached_dock:
             p.setOpacity(0.0)
         p.translate(r.x, r.y)
         art.draw_shadow(p, R)
@@ -1180,10 +1264,11 @@ class RoombaWindow(QWidget):
         p.restore()
 
         # toren over de roomba heen
-        p.save()
-        p.translate(self.hub)
-        art.draw_hub_tower(p, R, t, self.state == "charging" and docked)
-        p.restore()
+        if not cached_dock:
+            p.save()
+            p.translate(self.hub)
+            art.draw_hub_tower(p, R, t, self.state == "charging" and docked)
+            p.restore()
 
         # vonkjes bij het aankoppelen
         st = t - self.sparks_at

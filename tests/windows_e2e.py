@@ -150,6 +150,23 @@ def main() -> int:
     left = {f.name for f in folder.iterdir()}
     text = log.read_text(errors="replace")
     (OUT / "roomba.log").write_text(text)
+
+    # --- 5. hoeveel kost de roomba in rust? ----------------------------------------
+    try:
+        import psutil
+
+        mouse_to(5, 5)  # muis weg van de roomba
+        time.sleep(6)
+        pr = psutil.Process(proc.pid)
+        pr.cpu_percent(None)
+        time.sleep(15)
+        cpu = pr.cpu_percent(None)
+        mem = pr.memory_info().rss / 1024 / 1024
+        msg = f"Windows in rust: {cpu:.2f}% CPU (van één kern), {mem:.0f} MB geheugen"
+        print(msg, flush=True)
+        (OUT / "rust.txt").write_text(msg + "\n")
+    except Exception as exc:  # noqa: BLE001
+        print("CPU-meting mislukt:", exc, flush=True)
     subprocess.run([sys.executable, "-m", "kde_roomba", "--quit"], cwd=ROOT, timeout=30)
     proc.wait(timeout=20)
     print("Over in de map:", sorted(left), flush=True)

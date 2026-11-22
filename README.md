@@ -160,6 +160,7 @@ Ander model? Pas `model` aan in de config, bijv. `qwen2.5:0.5b` (lichter) of
 | `protected_extensions` | … | Nooit weggooien |
 | `allow_folders` | `false` | Ook (lege) mappen mogen weg |
 | `dry_run` | `false` | Proefrun |
+| `idle_animation` | `true` | Ademend laadlampje in rust; `false` = vast lampje (in rust ~0,3% CPU i.p.v. ~1%) |
 | `screen` | `""` | Scherm, bijv. `"HDMI-A-1"`; leeg = KDE's hoofdscherm (waar je bureaublad-iconen staan) |
 | `roomba_size`, `speed_px_s` | `96`, `260` | Grootte en snelheid |
 | `icon_cell_width/height`, `icon_offset_x/y`, `icon_flow` | auto | Zie hieronder |
@@ -208,6 +209,14 @@ cd ~/.local/share/kde-roomba && python3 -m kde_roomba.kwin
 
 Dit toont welke regels titelbalken weghalen en verwijdert alleen die van KDE Roomba. Daarna krijgen
 nieuwe vensters weer een titelbalk (bestaande na opnieuw openen).
+
+### Hoe zwaar is hij?
+
+In rust (aangekoppeld) gebruikt de roomba ongeveer **1% van één CPU-kern** en ~85 MB geheugen; met
+`"idle_animation": false` ongeveer **0,3%**. Hij tekent dan alleen het laadstation opnieuw, en
+alleen als het laadlampje van helderheid verandert (uit een kant-en-klaar plaatje). Alleen tijdens
+een opruimronde draait hij op 60 beelden per seconde. Het AI-model (Ollama) draait alleen tijdens
+het nadenken.
 
 ## Verwijderen
 
