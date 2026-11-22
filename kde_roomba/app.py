@@ -1304,16 +1304,15 @@ class RoombaWindow(QWidget):
             p.setBrush(c)
             p.drawEllipse(QPointF(prt.x, prt.y), prt.size, prt.size)
 
-        # roomba
-        p.save()
-        if self.robot_hidden or cached_dock:
-            p.setOpacity(0.0)
-        p.translate(r.x, r.y)
-        art.draw_shadow(p, R)
-        p.rotate(math.degrees(r.heading))
-        state = self.state if not (self.state == "charging" and not docked) else "idle"
-        art.draw_roomba(p, R, state, t, r.brush_angle, r.brush_speed, r.bin_fill, outfits.get(self.cfg.outfit))
-        p.restore()
+        # roomba (niet tekenen als hij verborgen is of al in het gecachete plaatje zit)
+        if not (self.robot_hidden or cached_dock):
+            p.save()
+            p.translate(r.x, r.y)
+            art.draw_shadow(p, R)
+            p.rotate(math.degrees(r.heading))
+            state = self.state if not (self.state == "charging" and not docked) else "idle"
+            art.draw_roomba(p, R, state, t, r.brush_angle, r.brush_speed, r.bin_fill, outfits.get(self.cfg.outfit))
+            p.restore()
 
         # toren over de roomba heen
         if not cached_dock:
@@ -1438,6 +1437,9 @@ class RoombaWindow(QWidget):
         a_dry = m.addAction("Proefrun (niets echt weggooien)")
         a_dry.setCheckable(True)
         a_dry.setChecked(self.cfg.dry_run)
+        a_eco = m.addAction("🔋  Zuinig (laadlampje ademt niet)")
+        a_eco.setCheckable(True)
+        a_eco.setChecked(not self.cfg.idle_animation)
         a_ai = m.addAction(f"AI gebruiken ({self.cfg.model})")
         a_ai.setCheckable(True)
         a_ai.setChecked(self.cfg.use_ai)
@@ -1464,7 +1466,13 @@ class RoombaWindow(QWidget):
         a_restart = m.addAction("Herstarten")
         a_quit = m.addAction("Afsluiten")
         chosen = m.exec(global_pos)
-        if chosen in outfit_actions:
+        if chosen is a_eco:
+            self.cfg.idle_animation = not a_eco.isChecked()
+            self.cfg.save()
+            self._idle_sig = None
+            self.say("Zuinige modus aan: in rust doe ik bijna niets. 🔋" if a_eco.isChecked()
+                     else "Zuinige modus uit: mijn lampje ademt weer.", 3)
+        elif chosen in outfit_actions:
             self.set_outfit(outfit_actions[chosen])
         elif chosen is a_restart:
             restart_self()

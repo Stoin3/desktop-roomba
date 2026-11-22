@@ -21,8 +21,6 @@ import re
 import shutil
 import subprocess
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -410,6 +408,8 @@ class AIUnavailable(Exception):
 
 
 def _post_json(url: str, payload: dict, timeout: float) -> dict:
+    import urllib.request  # pas laden bij een AI-vraag (scheelt ~4 MB in rust)
+
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST"
     )
@@ -422,12 +422,14 @@ def ollama_status(cfg: Config) -> tuple[bool, str]:
     url = cfg.ollama_url.rstrip("/") + "/api/tags"
 
     def tags():
+        import urllib.request
+
         with urllib.request.urlopen(url, timeout=2) as resp:
             return json.loads(resp.read().decode())
 
     try:
         data = tags()
-    except (OSError, ValueError, urllib.error.URLError):
+    except (OSError, ValueError):
         if not shutil.which("ollama"):
             return False, "Ollama is niet geïnstalleerd"
         logging.getLogger("kde-roomba").info("Ollama draait niet; ik start 'ollama serve'.")
@@ -444,7 +446,7 @@ def ollama_status(cfg: Config) -> tuple[bool, str]:
             try:
                 data = tags()
                 break
-            except (OSError, ValueError, urllib.error.URLError):
+            except (OSError, ValueError):
                 continue
         if data is None:
             return False, "Ollama reageert niet"
@@ -475,7 +477,7 @@ def ai_classify_batch(cfg: Config, batch: list[FileInfo]) -> dict[str, tuple[boo
         data = _post_json(cfg.ollama_url.rstrip("/") + "/api/chat", payload, cfg.ai_timeout_s)
         content = data["message"]["content"]
         parsed = json.loads(content)
-    except (OSError, ValueError, KeyError, urllib.error.URLError) as exc:
+    except (OSError, ValueError, KeyError) as exc:
         raise AIUnavailable(str(exc)) from exc
 
     results: dict[str, tuple[bool, str]] = {}

@@ -181,6 +181,15 @@ def main() -> int:
         print(full[full.index("PROFIEL"):][:6000], flush=True)
     subprocess.run([sys.executable, "-m", "kde_roomba", "--quit"], cwd=ROOT, timeout=30)
     proc.wait(timeout=20)
+
+    # --- 6. zuinige modus (vast laadlampje) ----------------------------------------
+    (cfgdir / "config.json").write_text('{"use_ai": false, "outfit": "kat", "idle_animation": false}')
+    proc2 = subprocess.Popen([sys.executable, "-m", "kde_roomba"], cwd=ROOT)
+    rust3 = measure_idle(proc2.pid, "Windows in rust, zuinige modus", settle=30)
+    with open(OUT / "rust.txt", "a") as fh:
+        fh.write(rust3 + "\n")
+    subprocess.run([sys.executable, "-m", "kde_roomba", "--quit"], cwd=ROOT, timeout=30)
+    proc2.wait(timeout=20)
     print("Over in de map:", sorted(left), flush=True)
     assert not (set(junk) & left), f"Afval niet opgeruimd: {set(junk) & left}"
     assert set(keep) <= left, f"Nuttige bestanden weg: {set(keep) - left}"
