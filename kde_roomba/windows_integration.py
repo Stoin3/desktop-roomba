@@ -188,9 +188,14 @@ class WinIntegration:
         log.info("Geheugen teruggegeven aan Windows (rust)")
 
     def _set_passthrough(self, on: bool) -> None:
-        if on != self.passthrough and self.w.windowHandle() is not None:
+        """Klikken doorlaten (behalve op de roomba). Direct op het Windows-venster
+        gezet en elke tick gecontroleerd: een Qt-vlag wordt op Windows pas echt
+        toegepast bij een nieuw beeld, en in de zuinige modus komt dat er niet."""
+        if not self.hwnd:
+            return
+        if on != self.passthrough or ws.click_through(self.hwnd) != on:
             self.passthrough = on
-            self.w.windowHandle().setFlag(Qt.WindowType.WindowTransparentForInput, on)
+            ws.set_click_through(self.hwnd, on)
 
     def set_topmost(self, on: bool) -> None:
         self.topmost = on

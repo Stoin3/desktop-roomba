@@ -140,6 +140,27 @@ user32.FindWindowExW.restype = wintypes.HWND
 user32.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
 
 
+GWL_EXSTYLE = -20
+WS_EX_TRANSPARENT, WS_EX_LAYERED = 0x20, 0x80000
+user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, c_int]
+user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, c_int, ctypes.c_ssize_t]
+
+
+def click_through(hwnd: int) -> bool:
+    return bool(user32.GetWindowLongPtrW(wintypes.HWND(hwnd), GWL_EXSTYLE) & WS_EX_TRANSPARENT)
+
+
+def set_click_through(hwnd: int, on: bool) -> None:
+    """Klikken door het venster heen laten vallen (WS_EX_TRANSPARENT), direct op
+    het Windows-venster. Werkt meteen, ook als er niet opnieuw getekend wordt."""
+    style = user32.GetWindowLongPtrW(wintypes.HWND(hwnd), GWL_EXSTYLE)
+    new = (style | WS_EX_TRANSPARENT | WS_EX_LAYERED) if on else (style & ~WS_EX_TRANSPARENT)
+    if new != style:
+        user32.SetWindowLongPtrW(wintypes.HWND(hwnd), GWL_EXSTYLE, new)
+
+
 def set_topmost(hwnd: int, on: bool) -> None:
     flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOOWNERZORDER
     user32.SetWindowPos(wintypes.HWND(hwnd), wintypes.HWND(HWND_TOPMOST if on else HWND_NOTOPMOST), 0, 0, 0, 0, flags)

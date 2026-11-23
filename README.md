@@ -28,15 +28,20 @@ mogelijkheden die Windows biedt:
 | Bediening | roomba + systeemvak-icoon | roomba |
 | Prullenbak | Windows-prullenbak (terug te zetten) | freedesktop-prullenbak |
 
-**Installeren:** download de repository (Code → Download ZIP), pak uit en dubbelklik
-`windows\install.cmd`. Geen administrator nodig (start de roomba ook níet als administrator:
-dan mag hij je Verkenner-vensters niet zien). Het script installeert Python (via winget) met PyQt6 en
-comtypes, maakt snelkoppelingen in het Startmenu (*Roomba*, *Roomba herstarten*, *Roomba afsluiten*),
-vraagt of hij bij aanmelden moet starten en biedt Ollama + het AI-model aan.
+**Installeren:** download **Roomba-Setup.exe** van de
+[nieuwste release](https://github.com/Stoin3/desktop-roomba/releases/latest) en volg de wizard
+(geen administrator nodig; installeert in `%LOCALAPPDATA%\Programs\Roomba`). Je kunt kiezen voor een
+snelkoppeling op het bureaublad, automatisch starten bij aanmelden en het lokale AI-model (Ollama).
+In het Startmenu staan daarna *Roomba*, *Roomba herstarten*, *Roomba afsluiten* en *Roomba verwijderen*.
+Start de roomba níet als administrator: dan mag hij je Verkenner-vensters misschien niet zien.
 
-Losse `Roomba.exe`: `windows\build-exe.ps1`, of download het artefact *roomba-windows* van de
-GitHub Actions-run (die test de Windows-versie ook echt: Verkenner openen, roomba erheen slepen,
-afval weg, nuttige bestanden blijven).
+**Verwijderen:** *Instellingen → Apps → Roomba → Verwijderen*, of *Roomba verwijderen* in het
+Startmenu. De roomba wordt eerst afgesloten; daarna vraagt de uninstaller of je ook je instellingen
+en logboek wilt wissen.
+
+Liever zonder installatie? In de release staan ook een losse **Roomba.exe** en
+**Roomba-windows.zip**. Vanaf de broncode: `windows\install.cmd` (Python-variant) of
+`windows\build-exe.ps1`.
 
 Wat ziet de roomba? Diagnose: `python -m kde_roomba.windows_shell` (in `%LOCALAPPDATA%\kde-roomba\app`).
 Instellingen en log: `%APPDATA%\kde-roomba\config.json` en `%LOCALAPPDATA%\kde-roomba\roomba.log`.

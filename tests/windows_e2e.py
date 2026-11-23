@@ -183,11 +183,30 @@ def main() -> int:
     proc.wait(timeout=20)
 
     # --- 6. zuinige modus (vast laadlampje) ----------------------------------------
-    (cfgdir / "config.json").write_text('{"use_ai": false, "outfit": "kat", "idle_animation": false}')
+    (cfgdir / "config.json").write_text('{"use_ai": false, "outfit": "kat", "idle_animation": false, "dry_run": true}')
+    (folder.parent / "Bureau").mkdir(exist_ok=True)
     proc2 = subprocess.Popen([sys.executable, "-m", "kde_roomba"], cwd=ROOT)
     rust3 = measure_idle(proc2.pid, "Windows in rust, zuinige modus", settle=30)
     with open(OUT / "rust.txt", "a") as fh:
         fh.write(rust3 + "\n")
+    # na lange rust in de zuinige modus moet hij nog gewoon reageren (bug uit v2.2.0):
+    # echte dubbelklik op de roomba → proefrun op het bureaublad
+    mouse_to(rx, ry)
+    time.sleep(0.6)  # (de roomba merkt dat de muis erboven is en vangt klikken weer)
+    for _ in range(2):
+        user32.mouse_event(0x0002, 0, 0, 0, 0)
+        user32.mouse_event(0x0004, 0, 0, 0, 0)
+        time.sleep(0.08)
+    reacted = False
+    for _ in range(40):
+        time.sleep(0.5)
+        t2 = log.read_text(errors="replace")
+        if "Opruimen:" in t2:
+            reacted = True
+            break
+    shot("5-zuinig-dubbelklik")
+    print("Zuinige modus, dubbelklik na lange rust:", "reageert" if reacted else "REAGEERT NIET", flush=True)
+    assert reacted, "roomba reageert niet op een dubbelklik in de zuinige modus"
     subprocess.run([sys.executable, "-m", "kde_roomba", "--quit"], cwd=ROOT, timeout=30)
     proc2.wait(timeout=20)
     print("Over in de map:", sorted(left), flush=True)

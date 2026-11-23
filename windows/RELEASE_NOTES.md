@@ -9,6 +9,7 @@ door de bestanden.
 
 | Bestand | Wat |
 |---|---|
+| **Roomba-Setup.exe** | **Aanbevolen.** Installatiewizard (geen administrator nodig), met uninstaller in Instellingen → Apps. |
 | **Roomba.exe** | Eén bestand: dubbelklikken en klaar. Start iets langzamer (pakt zichzelf eerst uit). |
 | **Roomba-windows.zip** | Map-versie: uitpakken en `Roomba.exe` in de map starten. Start sneller. |
 
@@ -18,7 +19,18 @@ ondertekend is: kies **Meer info → Toch uitvoeren**. Start de roomba **niet** 
 Voor de AI: installeer [Ollama](https://ollama.com) en doe `ollama pull qwen2.5:1.5b`. Zonder Ollama
 gebruikt de roomba zijn ingebouwde regels. Linux/KDE: zie de README (`./install.sh`).
 
-### Nieuw in 2.2.0 – veel zuiniger in rust
+### Nieuw in 2.3.0
+
+- **Installatiewizard** (Roomba-Setup.exe): installatiemap, snelkoppeling op het bureaublad,
+  automatisch starten, optioneel het lokale AI-model (Ollama). Updaten over een oude versie heen
+  sluit de draaiende roomba eerst netjes af.
+- **Uninstaller**: via Instellingen → Apps of het Startmenu; sluit de roomba af, verwijdert alles
+  en vraagt of je ook je instellingen en logboek wilt wissen.
+- **Opgelost**: in de zuinige modus reageerde de roomba op Windows niet meer op klikken (de
+  klik-doorlaat-instelling werd pas bij een nieuw beeld toegepast, en in de zuinige modus komt dat
+  er niet). Getest met een echte dubbelklik na lange rust in de zuinige modus, met proefrun.
+
+### 2.2.0 – veel zuiniger in rust
 
 Gemeten op een echte Windows-machine, roomba in rust (aangekoppeld):
 

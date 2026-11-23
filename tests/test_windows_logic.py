@@ -27,6 +27,9 @@ fake.cursor_pos = lambda: (450, 300)
 fake.folder_at = lambda x, y, skip, desk: (calls.append((x, y, sorted(skip))) or ("C:/Users/x/Downloads", VIEW))
 fake.place_on_desktop = lambda h: calls.append(("desk", h))
 fake.set_topmost = lambda h, on: calls.append(("top", on))
+_ct = {}
+fake.click_through = lambda h: _ct.get(h, False)
+fake.set_click_through = lambda h, on: _ct.__setitem__(h, on)
 sys.modules["kde_roomba.windows_shell"] = fake
 # -----------------------------------------------------------------------------
 from PyQt6.QtWidgets import QApplication, QWidget
@@ -110,8 +113,9 @@ fake = types.ModuleType("kde_roomba.windows_shell")
 class ViewInfo:
     folder: str; top_hwnd: int; view_hwnd: int; view_rect: tuple; mode: int; icon: int; spacing: tuple; items: dict
 fake.ViewInfo = ViewInfo
-for name in ("place_on_desktop", "set_topmost"):
+for name in ("place_on_desktop", "set_topmost", "set_click_through"):
     setattr(fake, name, lambda *a: None)
+fake.click_through = lambda h: False
 fake.desktop_view = lambda folder: None
 fake.cursor_pos = lambda: (0, 0)
 sys.modules["kde_roomba.windows_shell"] = fake
