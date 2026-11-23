@@ -8,7 +8,7 @@ $Log   = Join-Path $env:LOCALAPPDATA "kde-roomba\roomba.log"
 function Check($ok, $what) { if ($ok) { Write-Host "  OK  $what" } else { Write-Host "  FOUT $what" -ForegroundColor Red; exit 1 } }
 
 Write-Host "== Installeren (stil): $Setup"
-$p = Start-Process $Setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/TASKS=autostart","/LOG=e2e-out\setup.log" -Wait -PassThru
+$p = Start-Process $Setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/LANG=dutch","/TASKS=autostart","/LOG=e2e-out\setup.log" -Wait -PassThru
 Check ($p.ExitCode -eq 0) "setup klaar (code $($p.ExitCode))"
 Check (Test-Path "$App\Roomba.exe") "Roomba.exe geïnstalleerd in $App"
 Check (Test-Path "$App\install-ai.ps1") "AI-installatiescript meegeleverd"
@@ -28,7 +28,7 @@ Check $ok "Roomba.exe start en toont zijn venster"
 Check ((Get-Process Roomba -ErrorAction SilentlyContinue) -ne $null) "proces draait"
 
 Write-Host "== Opnieuw installeren over de draaiende versie heen (update)"
-$p = Start-Process $Setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/TASKS=autostart" -Wait -PassThru
+$p = Start-Process $Setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/LANG=dutch","/TASKS=autostart" -Wait -PassThru
 Check ($p.ExitCode -eq 0) "update geslaagd terwijl de roomba draaide (code $($p.ExitCode))"
 
 Write-Host "== Verwijderen (stil)"
