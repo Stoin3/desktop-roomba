@@ -76,10 +76,18 @@ def draw_side_brush(p: QPainter, r: float, angle_deg: float, motion_blur: float)
     p.restore()
 
 
+BREATH_SPEED = 1.25  # rad/s → één 'ademhaling' per ~5 s (rustig, en zuinig: weinig nieuwe beelden)
+
+
+def charge_intensity(t: float) -> float:
+    """Helderheid (0.35..1) van het ademende laadlampje."""
+    return 0.35 + 0.65 * (0.5 + 0.5 * math.sin(t * BREATH_SPEED))
+
+
 def led_color(state: str, t: float) -> tuple[QColor, float]:
     """Kleur en intensiteit (0..1) van de statusring."""
     if state == "charging":
-        return _c("#38e07b"), 0.35 + 0.65 * (0.5 + 0.5 * math.sin(t * 2.2))
+        return _c("#38e07b"), charge_intensity(t)
     if state == "thinking":
         return _c("#4aa8ff"), 1.0
     if state in ("working", "returning", "leaving"):
@@ -310,7 +318,7 @@ def draw_hub_tower(p: QPainter, r: float, t: float, charging: bool) -> None:
 
     # status-LED
     if charging:
-        inten = 0.35 + 0.65 * (0.5 + 0.5 * math.sin(t * 2.2))
+        inten = charge_intensity(t)
         col = "#38e07b"
     else:
         inten = 0.9

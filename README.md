@@ -160,6 +160,7 @@ Ander model? Pas `model` aan in de config, bijv. `qwen2.5:0.5b` (lichter) of
 | `protected_extensions` | … | Nooit weggooien |
 | `allow_folders` | `false` | Ook (lege) mappen mogen weg |
 | `dry_run` | `false` | Proefrun |
+| `idle_animation` | `true` | Ademend laadlampje in rust; `false` = vast lampje (in rust ~0,3% CPU i.p.v. ~1%) |
 | `screen` | `""` | Scherm, bijv. `"HDMI-A-1"`; leeg = KDE's hoofdscherm (waar je bureaublad-iconen staan) |
 | `roomba_size`, `speed_px_s` | `96`, `260` | Grootte en snelheid |
 | `icon_cell_width/height`, `icon_offset_x/y`, `icon_flow` | auto | Zie hieronder |
@@ -208,6 +209,23 @@ cd ~/.local/share/kde-roomba && python3 -m kde_roomba.kwin
 
 Dit toont welke regels titelbalken weghalen en verwijdert alleen die van KDE Roomba. Daarna krijgen
 nieuwe vensters weer een titelbalk (bestaande na opnieuw openen).
+
+### Hoe zwaar is hij?
+
+Gemeten in rust (aangekoppeld), op een echte Windows-machine (GitHub Actions) en op Linux/Wayland:
+
+| In rust | CPU (van één kern) | Geheugen (echt privé) |
+|---|---|---|
+| Windows, na opstarten | ~0% | ~72 MB |
+| Windows, zuinige modus (rechtsklik → Zuinig) | ~0,2% | ~71 MB |
+| Linux/Wayland | ~1% (zuinig ~0,3%) | ~65 MB |
+
+Hoe: in rust tekent hij alleen het laadstation, uit een kant-en-klaar plaatje, en alleen als het
+laadlampje van helderheid verandert. Op Windows is het venster in rust bovendien klein (alleen rond het
+laadstation) en worden COM/UI Automation pas geladen als hij echt gaat werken (daarna ~+11 MB).
+Ongeveer 40 MB van het geheugen is de ondergrens van Python + Qt zelf (een leeg PyQt6-venster).
+Alleen tijdens een opruimronde draait hij op 60 beelden per seconde; het AI-model (Ollama) draait
+alleen tijdens het nadenken.
 
 ## Verwijderen
 

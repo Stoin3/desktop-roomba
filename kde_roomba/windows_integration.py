@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import time
 
-from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer
+from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt
 from PyQt6.QtGui import QCursor, QGuiApplication, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import QSystemTrayIcon, QWidget
 
@@ -121,6 +121,8 @@ class WinIntegration:
         self._last_z = 0.0
         self._desk_cache: tuple[float, dict] | None = None
         self.tray: QSystemTrayIcon | None = None
+        self._idle_since: float | None = None
+        self._trimmed = False
 
     # ------------------------------------------------------------ opzetten
     def after_show(self) -> None:
@@ -145,7 +147,7 @@ class WinIntegration:
     # ------------------------------------------------------------ coördinaten
     def to_widget(self, px: float, py: float) -> QPointF:
         g = phys_to_logical(px, py)
-        return QPointF(self.w.mapFromGlobal(g.toPoint())) + QPointF(g.x() - int(g.x()), g.y() - int(g.y()))
+        return self.w.to_overlay(g.toPoint()) + QPointF(g.x() - int(g.x()), g.y() - int(g.y()))
 
     # ------------------------------------------------------------ per frame
     def tick(self) -> None:
@@ -156,13 +158,34 @@ class WinIntegration:
             self.carry.follow()
             self._set_passthrough(False)
             return
-        c = QPointF(w.mapFromGlobal(QCursor.pos()))
+        c = w.to_overlay(QCursor.pos())
         hit = w.on_roomba(c) or (w.bubble_alpha > 0.3 and getattr(w, "_bubble_rect", QRectF()).contains(c))
         self._set_passthrough(not hit and w.press_pos is None and not w.dragging)
         now = time.monotonic()
+        # Na 20 s rust: ongebruikt geheugen teruggeven aan Windows (één keer per rustperiode)
+        if w.compact and not w.busy():
+            if self._idle_since is None:
+                self._idle_since = now
+            elif not self._trimmed and now - self._idle_since > 20:
+                self._trimmed = True
+                self.trim_memory()
+        else:
+            self._idle_since, self._trimmed = None, False
         if not self.topmost and now - self._last_z > 1.0:  # ook na Win+D weer boven de iconen
             self._last_z = now
             ws.place_on_desktop(self.hwnd)
+
+    @staticmethod
+    def trim_memory() -> None:
+        """Python-afval opruimen en de 'working set' van het proces leegmaken: Windows
+        haalt pagina's pas terug als ze weer nodig zijn (dat is wat Taakbeheer toont)."""
+        import ctypes
+        import gc
+
+        gc.collect()
+        k32 = ctypes.windll.kernel32
+        k32.SetProcessWorkingSetSize(k32.GetCurrentProcess(), ctypes.c_size_t(-1), ctypes.c_size_t(-1))
+        log.info("Geheugen teruggegeven aan Windows (rust)")
 
     def _set_passthrough(self, on: bool) -> None:
         if on != self.passthrough and self.w.windowHandle() is not None:

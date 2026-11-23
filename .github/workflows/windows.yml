@@ -3,7 +3,16 @@ name: Windows
 on:
   push:
     branches: ["claude/**", "main"]
+    tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Maak een release met deze tag (bijv. v2.1.0); leeg = alleen testen/bouwen"
+        required: false
+        default: ""
+
+permissions:
+  contents: write   # nodig om een release aan te maken bij een v*-tag
 
 jobs:
   windows:
@@ -15,7 +24,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Afhankelijkheden
-        run: python -m pip install -r requirements-windows.txt pytest pillow pyinstaller
+        run: python -m pip install -r requirements-windows.txt pytest pillow pyinstaller psutil
       - name: Tests
         run: python -m pytest -q tests
       - name: Diagnose (wat ziet de roomba?)
@@ -29,13 +38,31 @@ jobs:
         shell: pwsh
         run: |
           python -m kde_roomba.make_icon windows\roomba.ico
-          pyinstaller --noconfirm --windowed --name Roomba --icon windows\roomba.ico --paths . `
-            --collect-submodules comtypes --hidden-import kde_roomba.windows_shell `
-            --hidden-import kde_roomba.windows_integration windows\run_roomba.py
+          $common = @("--noconfirm", "--windowed", "--icon", "windows\roomba.ico", "--paths", ".",
+                      "--collect-submodules", "comtypes", "--hidden-import", "kde_roomba.windows_shell",
+                      "--hidden-import", "kde_roomba.windows_integration",
+                      "--hidden-import", "kde_roomba.windows_com")
+          # map-versie (start sneller) en één los bestand
+          pyinstaller @common --name Roomba windows\run_roomba.py
+          pyinstaller @common --onefile --name Roomba --distpath dist-onefile --workpath build-onefile windows\run_roomba.py
+          Compress-Archive -Path dist\Roomba\* -DestinationPath Roomba-windows.zip -Force
+          Get-Item dist-onefile\Roomba.exe, Roomba-windows.zip | Select-Object Name, Length
+      - name: Release maken
+        if: success() && (startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != '')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          name: KDE Roomba ${{ inputs.release_tag || github.ref_name }}
+          body_path: windows/RELEASE_NOTES.md
+          files: |
+            dist-onefile/Roomba.exe
+            Roomba-windows.zip
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: roomba-windows
           path: |
             e2e-out/
-            dist/Roomba/
+            dist-onefile/Roomba.exe
+            Roomba-windows.zip

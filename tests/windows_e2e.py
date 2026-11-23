@@ -45,6 +45,26 @@ def drag(x0, y0, x1, y1, steps=40) -> None:
     user32.mouse_event(0x0004, 0, 0, 0, 0)  # links omhoog
 
 
+def measure_idle(pid: int, label: str, settle: float = 26.0) -> str:
+    """CPU en geheugen in rust. Wacht eerst tot de roomba compact is en zijn geheugen
+    heeft teruggegeven (na 20 s rust)."""
+    try:
+        import psutil
+    except ImportError:
+        return f"{label}: psutil ontbreekt"
+    mouse_to(5, 5)  # muis weg van de roomba
+    time.sleep(settle)
+    pr = psutil.Process(pid)
+    pr.cpu_percent(None)
+    time.sleep(20)
+    cpu = pr.cpu_percent(None)
+    mi = pr.memory_full_info()
+    msg = (f"{label}: {cpu:.2f}% CPU (van één kern) | Taakbeheer-geheugen (working set) {mi.rss / 2**20:.0f} MB"
+           f" | echt privé (USS) {mi.uss / 2**20:.0f} MB | vastgelegd (private) {mi.private / 2**20:.0f} MB")
+    print(msg, flush=True)
+    return msg
+
+
 def main() -> int:
     folder = Path("C:/roomba-test/Rommel")
     folder.mkdir(parents=True, exist_ok=True)
@@ -118,7 +138,8 @@ def main() -> int:
     log = state / "roomba.log"
     if log.exists():
         log.unlink()
-    proc = subprocess.Popen([sys.executable, "-m", "kde_roomba"], cwd=ROOT)
+    env = dict(os.environ, KDE_ROOMBA_PROFILE="12,20")  # profiel van 20 s rust na opstarten
+    proc = subprocess.Popen([sys.executable, "-m", "kde_roomba"], cwd=ROOT, env=env)
     for _ in range(40):
         time.sleep(0.5)
         if log.exists() and "Status na 3 s" in log.read_text(errors="replace"):
@@ -134,6 +155,7 @@ def main() -> int:
     print("Venster onder de roomba:", hex(top or 0), ws._class_name(top) if top else "-", flush=True)
     time.sleep(1)
     shot("0-roomba")
+    rust1 = measure_idle(proc.pid, "Windows in rust na opstarten")
 
     # --- 4. slepen naar het Verkenner-venster ------------------------------------
     vx, vy, vw, vh = view.view_rect
@@ -150,8 +172,24 @@ def main() -> int:
     left = {f.name for f in folder.iterdir()}
     text = log.read_text(errors="replace")
     (OUT / "roomba.log").write_text(text)
+
+    # --- 5. hoeveel kost de roomba in rust na een ronde? ------------------------------
+    rust2 = measure_idle(proc.pid, "Windows in rust na een opruimronde")
+    (OUT / "rust.txt").write_text(rust1 + "\n" + rust2 + "\n")
+    full = log.read_text(errors="replace")
+    if "PROFIEL" in full:
+        print(full[full.index("PROFIEL"):][:6000], flush=True)
     subprocess.run([sys.executable, "-m", "kde_roomba", "--quit"], cwd=ROOT, timeout=30)
     proc.wait(timeout=20)
+
+    # --- 6. zuinige modus (vast laadlampje) ----------------------------------------
+    (cfgdir / "config.json").write_text('{"use_ai": false, "outfit": "kat", "idle_animation": false}')
+    proc2 = subprocess.Popen([sys.executable, "-m", "kde_roomba"], cwd=ROOT)
+    rust3 = measure_idle(proc2.pid, "Windows in rust, zuinige modus", settle=30)
+    with open(OUT / "rust.txt", "a") as fh:
+        fh.write(rust3 + "\n")
+    subprocess.run([sys.executable, "-m", "kde_roomba", "--quit"], cwd=ROOT, timeout=30)
+    proc2.wait(timeout=20)
     print("Over in de map:", sorted(left), flush=True)
     assert not (set(junk) & left), f"Afval niet opgeruimd: {set(junk) & left}"
     assert set(keep) <= left, f"Nuttige bestanden weg: {set(keep) - left}"

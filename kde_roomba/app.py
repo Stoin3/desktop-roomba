@@ -29,6 +29,8 @@ from PyQt6.QtCore import QFileInfo, QFile, QLockFile
 from . import APP_ID, __version__, art, brain, instance, kwin, outfits, wayland_layer
 
 try:
+    if os.name == "nt":  # D-Bus (Dolphin/KWin) is op Windows niet nodig: niet laden
+        raise ImportError("niet op Windows")
     from . import folder_drop, kwin_windows
 except ImportError as _exc:  # PyQt6.QtDBus ontbreekt: slepen naar mappen uit
     folder_drop = kwin_windows = None
@@ -329,6 +331,8 @@ class RoombaWindow(QWidget):
         if not self.layer_shell:
             self.setGeometry(geom)
 
+        self.view_off = QPointF(0, 0)  # overlay-coördinaten → venstercoördinaten (Windows: compact venster)
+        self.compact = False
         self.hub = self._initial_hub()
         self.robot = Robot(self.hub.x(), self.hub.y(), 0.0)
         self.state = "charging"
@@ -386,7 +390,7 @@ class RoombaWindow(QWidget):
         cache = getattr(self, "_primary_cache", None)
         if self.cfg.screen:
             want = self.cfg.screen
-        elif cache and now - cache[0] < 15:
+        elif cache and now - cache[0] < 60:  # (schermwijzigingen wissen de cache meteen)
             want = cache[1]
         else:
             want = wayland_layer.kde_primary_output()
@@ -462,6 +466,8 @@ class RoombaWindow(QWidget):
                 self.geom = sc.availableGeometry()
                 if self.win is not None:
                     self.geom = windows_integration.overlay_geometry() or self.geom
+                    self.compact = False
+                    self.view_off = QPointF(0, 0)
                 self.setGeometry(self.geom)
         self._unexposed = 0
         self.show()
@@ -474,12 +480,51 @@ class RoombaWindow(QWidget):
     def now(self) -> float:
         return time.monotonic() - self.t0
 
+    # ------------------------------------------------------------ coördinaten
+    # Alles wordt getekend in 'overlay-coördinaten' (het hele overlaygebied
+    # self.geom). Op Windows is het venster in rust kleiner (alleen rond het
+    # laadstation); view_off is dan de linkerbovenhoek daarvan.
+    def to_overlay(self, global_pos) -> QPointF:
+        return QPointF(self.mapFromGlobal(global_pos)) + self.view_off
+
+    def overlay_rect(self) -> QRectF:
+        return QRectF(0, 0, self.geom.width(), self.geom.height())
+
+    def visible_rect(self) -> QRectF:
+        return QRectF(self.view_off.x(), self.view_off.y(), self.width(), self.height())
+
+    def _evpos(self, ev) -> QPointF:
+        return ev.position() + self.view_off
+
+    def compact_rect(self) -> QRectF:
+        """Klein venstergebied rond het laadstation (incl. ruimte voor de tekstballon)."""
+        R, h = self.R, self.hub
+        return QRectF(h.x() - 330, h.y() - R - 140, 330 + R * 2.9, R + 140 + R * 1.6).intersected(self.overlay_rect())
+
+    def _set_compact(self, on: bool) -> None:
+        """Windows: in rust een klein venster (weinig geheugen, goedkoop tekenen);
+        tijdens het rijden het volledige overlayvenster."""
+        if on == self.compact:
+            return
+        self.compact = on
+        g = self.geom
+        if on:
+            c = self.compact_rect().toAlignedRect()
+            self.view_off = QPointF(c.topLeft())
+            self.setGeometry(QRect(g.topLeft() + c.topLeft(), c.size()))
+        else:
+            self.view_off = QPointF(0, 0)
+            self.setGeometry(g)
+        self._need_full = True
+        self._idle_sig = None
+        self.update()
+
     def hub_area(self) -> QRectF:
         """Gebied waarin het laadstation staat (Windows: bruikbaar deel van het hoofdscherm)."""
         if self.win is not None and QGuiApplication.primaryScreen() is not None:
             a = QGuiApplication.primaryScreen().availableGeometry()
-            tl = QPointF(self.mapFromGlobal(a.topLeft()))
-            return QRectF(tl.x(), tl.y(), a.width(), a.height()).intersected(QRectF(self.rect()))
+            tl = self.to_overlay(a.topLeft())
+            return QRectF(tl.x(), tl.y(), a.width(), a.height()).intersected(self.overlay_rect())
         return QRectF(0, 0, self.geom.width(), self.geom.height())
 
     def _initial_hub(self) -> QPointF:
@@ -935,7 +980,7 @@ class RoombaWindow(QWidget):
         target, why = resolve_folder(folder)
         if target is not None and view is not None and self.cfg.drive_in_dolphin:
             vx, vy, vw, vh = view.view
-            if QRectF(self.rect()).contains(QPointF(vx + vw / 2, vy + vh / 2)):
+            if self.overlay_rect().contains(QPointF(vx + vw / 2, vy + vh / 2)):
                 self.dolphin = {"provider": view}
                 log.info("Verkenner-venster: %s", view.describe())
             else:
@@ -1056,7 +1101,90 @@ class RoombaWindow(QWidget):
         self.bubble_alpha += (target_alpha - self.bubble_alpha) * min(1.0, dt * 8)
 
         self.update_input_region()
-        self.update()
+        self._schedule_paint(target_alpha)
+
+    # ------------------------------------------------------------ zuinig tekenen
+    DOCK_LEVELS = 8
+
+    def _dock_level(self, t: float) -> int:
+        if not self.cfg.idle_animation:
+            return self.DOCK_LEVELS - 1  # vast lampje: in rust helemaal geen nieuwe beelden
+        inten = art.charge_intensity(t)
+        return max(0, min(self.DOCK_LEVELS - 1, round((inten - 0.35) / 0.65 * (self.DOCK_LEVELS - 1))))
+
+    def _dock_pixmap(self, t: float) -> tuple[QPixmap, float]:
+        """Laadstation + aangekoppelde roomba als één plaatje (gecachet per
+        helderheidsstap van het ademende laadlampje): in rust kost elk beeld
+        dan maar één drawPixmap in plaats van tientallen verlopen/schaduwen."""
+        level = self._dock_level(t)
+        R, dpr = self.R, self.devicePixelRatioF()
+        fill = round(min(1.0, self.robot.bin_fill) * 5) / 5  # stofbakstand (na een ronde gevuld)
+        key = (self.cfg.outfit, R, dpr, level, fill)
+        cache = self.__dict__.setdefault("_dock_cache", {})
+        if key not in cache:
+            if len(cache) > self.DOCK_LEVELS * 2:
+                cache.clear()
+            # tijdstip waarop het lampje precies deze helderheid heeft
+            x = max(-1.0, min(1.0, (level / (self.DOCK_LEVELS - 1)) * 2 - 1))
+            tl = math.asin(x) / art.BREATH_SPEED
+            off = R * 1.9
+            w, h = R * 4.4, R * 3.8
+            pm = QPixmap(int(w * dpr) + 2, int(h * dpr) + 2)
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(Qt.GlobalColor.transparent)
+            q = QPainter(pm)
+            q.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            q.translate(off, off)
+            art.draw_hub_base(q, R, tl, True, True)
+            art.draw_shadow(q, R)
+            art.draw_roomba(q, R, "charging", tl, self.robot.brush_angle, 0.0, fill, outfits.get(self.cfg.outfit))
+            art.draw_hub_tower(q, R, tl, True)
+            q.end()
+            cache[key] = (pm, off)
+        return cache[key]
+
+    IDLE_INTERVAL_MS = 200   # in rust: 5 controles/s (laadlampje verandert hooguit ~3x/s)
+    ACTIVE_INTERVAL_MS = 16  # bezig: ~60 beelden/s
+
+    def _is_animating(self, target_alpha: float) -> bool:
+        r = self.robot
+        return bool(
+            self.busy() or self.queue or self.particles or self.flying or r.trail
+            or self.dragging or self.carrying or self.robot_hidden
+            or abs(self.bubble_alpha - target_alpha) > 0.01 or r.brush_speed > 0.01
+            or (self.now() - self.sparks_at) < 0.7
+        )
+
+    def _schedule_paint(self, target_alpha: float) -> None:
+        """In rust alleen het stukje rond het laadstation opnieuw tekenen, 10x/s;
+        tijdens het rijden het hele venster, 60x/s."""
+        animating = self._is_animating(target_alpha)
+        if self.win is not None:
+            r = self.robot
+            docked = abs(r.x - self.hub.x()) < 2 and abs(r.y - self.hub.y()) < 2
+            heavy = bool(self.busy() or self.queue or self.particles or self.flying or r.trail or self.dragging
+                         or self.carrying or self.robot_hidden or not docked)
+            self._set_compact(not heavy)
+        want = self.ACTIVE_INTERVAL_MS if animating else self.IDLE_INTERVAL_MS
+        if self.timer.interval() != want:
+            self.timer.setInterval(want)
+        if animating or getattr(self, "_need_full", True):
+            self._need_full = animating  # na het stoppen nog één volledig beeld
+            self._idle_sig = None
+            self.update()
+            return
+        # In rust: alleen opnieuw tekenen als er echt iets verandert
+        # (helderheidsstap van het laadlampje, hover, ballontekst).
+        sig = (self._dock_level(self.now()), round(self.robot.bin_fill * 5), self.hover, self.bubble_text if self.bubble_alpha > 0.01 else "",
+               self.cfg.outfit, self.hub.x(), self.hub.y())
+        if sig == getattr(self, "_idle_sig", None):
+            return
+        self._idle_sig = sig
+        R = self.R
+        rect = self.hub_rect().united(QRectF(self.robot.x - R * 1.6, self.robot.y - R * 1.6, R * 3.2, R * 3.2))
+        if self.hover or self.bubble_alpha > 0.01:
+            rect = rect.united(getattr(self, "_bubble_rect", QRectF())).adjusted(-6, -6, 6, 6)
+        self.update(rect.translated(-self.view_off).toAlignedRect().adjusted(-4, -4, 4, 4))
 
     # ------------------------------------------------------------ input region
     def interactive_rect(self) -> QRectF:
@@ -1102,6 +1230,7 @@ class RoombaWindow(QWidget):
                      self.width(), self.height(), self.robot.x, self.robot.y,
                      h.screen().name() if h and h.screen() else "?", self.devicePixelRatioF())
         p = QPainter(self)
+        p.translate(-self.view_off)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         t = self.now()
@@ -1109,11 +1238,19 @@ class RoombaWindow(QWidget):
         r = self.robot
         docked = (abs(r.x - self.hub.x()) < 2 and abs(r.y - self.hub.y()) < 2) and not self.robot_hidden
 
-        # laadstation (plaat)
-        p.save()
-        p.translate(self.hub)
-        art.draw_hub_base(p, R, t, self.state == "charging", docked)
-        p.restore()
+        # In rust (aangekoppeld, laden): één kant-en-klaar plaatje van het hele
+        # laadstation + roomba, per helderheid van het laadlampje (zie _dock_pixmap).
+        cached_dock = (self.state == "charging" and docked and abs(r.heading) < 1e-3
+                       and r.brush_speed < 0.01 and not self.flying)
+        if cached_dock:
+            pm, off = self._dock_pixmap(t)
+            p.drawPixmap(QPointF(self.hub.x() - off, self.hub.y() - off), pm)
+        else:
+            # laadstation (plaat)
+            p.save()
+            p.translate(self.hub)
+            art.draw_hub_base(p, R, t, self.state == "charging", docked)
+            p.restore()
 
         # spoor: subtiele 'gestofzuigde' baan (per vervaagniveau één pad,
         # zodat overlappende stukjes niet optellen)
@@ -1168,22 +1305,22 @@ class RoombaWindow(QWidget):
             p.setBrush(c)
             p.drawEllipse(QPointF(prt.x, prt.y), prt.size, prt.size)
 
-        # roomba
-        p.save()
-        if self.robot_hidden:
-            p.setOpacity(0.0)
-        p.translate(r.x, r.y)
-        art.draw_shadow(p, R)
-        p.rotate(math.degrees(r.heading))
-        state = self.state if not (self.state == "charging" and not docked) else "idle"
-        art.draw_roomba(p, R, state, t, r.brush_angle, r.brush_speed, r.bin_fill, outfits.get(self.cfg.outfit))
-        p.restore()
+        # roomba (niet tekenen als hij verborgen is of al in het gecachete plaatje zit)
+        if not (self.robot_hidden or cached_dock):
+            p.save()
+            p.translate(r.x, r.y)
+            art.draw_shadow(p, R)
+            p.rotate(math.degrees(r.heading))
+            state = self.state if not (self.state == "charging" and not docked) else "idle"
+            art.draw_roomba(p, R, state, t, r.brush_angle, r.brush_speed, r.bin_fill, outfits.get(self.cfg.outfit))
+            p.restore()
 
         # toren over de roomba heen
-        p.save()
-        p.translate(self.hub)
-        art.draw_hub_tower(p, R, t, self.state == "charging" and docked)
-        p.restore()
+        if not cached_dock:
+            p.save()
+            p.translate(self.hub)
+            art.draw_hub_tower(p, R, t, self.state == "charging" and docked)
+            p.restore()
 
         # vonkjes bij het aankoppelen
         st = t - self.sparks_at
@@ -1204,10 +1341,12 @@ class RoombaWindow(QWidget):
 
         # tekstballon
         self._bubble_rect = art.draw_bubble(p, QPointF(r.x, r.y - R), self.bubble_text, self.bubble_alpha,
-                                            QRectF(self.rect()), below_y=r.y + R)
+                                            self.visible_rect(), below_y=r.y + R)
         p.end()
 
     def resizeEvent(self, ev) -> None:
+        if self.win is not None:
+            return  # Windows: de app regelt zelf de venstergrootte (compact/volledig)
         sz = ev.size()
         if sz.width() <= 0 or sz.height() <= 0:
             return
@@ -1224,7 +1363,7 @@ class RoombaWindow(QWidget):
         return math.hypot(pos.x() - self.robot.x, pos.y() - self.robot.y) <= self.R + 2
 
     def mouseMoveEvent(self, ev) -> None:
-        pos = ev.position()
+        pos = self._evpos(ev)
         self.hover = self.on_roomba(pos)
         if self.press_pos is not None and not self.busy():
             if not self.dragging and (pos - self.press_pos).manhattanLength() > 6:
@@ -1242,8 +1381,8 @@ class RoombaWindow(QWidget):
                 self.robot.x, self.robot.y = self.hub.x(), self.hub.y()
 
     def mousePressEvent(self, ev) -> None:
-        if ev.button() == Qt.MouseButton.LeftButton and self.on_roomba(ev.position()):
-            self.press_pos = ev.position()
+        if ev.button() == Qt.MouseButton.LeftButton and self.on_roomba(self._evpos(ev)):
+            self.press_pos = self._evpos(ev)
         elif ev.button() == Qt.MouseButton.RightButton:
             self.show_menu(ev.globalPosition().toPoint())
 
@@ -1259,7 +1398,7 @@ class RoombaWindow(QWidget):
         self.dragging = False
 
     def mouseDoubleClickEvent(self, ev) -> None:
-        if ev.button() == Qt.MouseButton.LeftButton and self.on_roomba(ev.position()):
+        if ev.button() == Qt.MouseButton.LeftButton and self.on_roomba(self._evpos(ev)):
             if self.busy():
                 self.say("Ik ben al bezig! 🧹", 1.5)
             else:
@@ -1299,6 +1438,9 @@ class RoombaWindow(QWidget):
         a_dry = m.addAction("Proefrun (niets echt weggooien)")
         a_dry.setCheckable(True)
         a_dry.setChecked(self.cfg.dry_run)
+        a_eco = m.addAction("🔋  Zuinig (laadlampje ademt niet)")
+        a_eco.setCheckable(True)
+        a_eco.setChecked(not self.cfg.idle_animation)
         a_ai = m.addAction(f"AI gebruiken ({self.cfg.model})")
         a_ai.setCheckable(True)
         a_ai.setChecked(self.cfg.use_ai)
@@ -1325,7 +1467,13 @@ class RoombaWindow(QWidget):
         a_restart = m.addAction("Herstarten")
         a_quit = m.addAction("Afsluiten")
         chosen = m.exec(global_pos)
-        if chosen in outfit_actions:
+        if chosen is a_eco:
+            self.cfg.idle_animation = not a_eco.isChecked()
+            self.cfg.save()
+            self._idle_sig = None
+            self.say("Zuinige modus aan: in rust doe ik bijna niets. 🔋" if a_eco.isChecked()
+                     else "Zuinige modus uit: mijn lampje ademt weer.", 3)
+        elif chosen in outfit_actions:
             self.set_outfit(outfit_actions[chosen])
         elif chosen is a_restart:
             restart_self()
@@ -1607,6 +1755,24 @@ def _main(args, logfile: Path) -> int:
             elif cmd == "show":
                 w.ensure_visible(force=True, reason="opnieuw gestart")
                 w.say("Hier ben ik! 👋", 3)
+
+    prof_spec = os.environ.get("KDE_ROOMBA_PROFILE", "")
+    if prof_spec:  # diagnose: "start,duur" in seconden → profiel van die periode in het log
+        import cProfile
+        import io
+        import pstats
+
+        start_s, dur_s = (float(x) for x in prof_spec.split(","))
+        prof = cProfile.Profile()
+
+        def prof_stop():
+            prof.disable()
+            buf = io.StringIO()
+            pstats.Stats(prof, stream=buf).sort_stats("tottime").print_stats(25)
+            log.info("PROFIEL (%.0f s in rust):\n%s", dur_s, buf.getvalue())
+
+        QTimer.singleShot(int(start_s * 1000), prof.enable)
+        QTimer.singleShot(int((start_s + dur_s) * 1000), prof_stop)
 
     server.command.connect(on_command)
     # schermen nog niet gedetecteerd (vlak na inloggen)? zodra ze er zijn starten
